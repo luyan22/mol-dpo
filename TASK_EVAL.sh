@@ -1,0 +1,2 @@
+# eval command for relay sampling
+python -u eval_analyze_relay.py --model_path outputs/DGAP_normal_time_sampling_no_loss --relay_sampling 1 --second_model_path outputs/fengsk_noisy_node_gen  --n_samples 10_000 --save_to_xyz 0 > logs/DGAP/eval_analyze_relay_fengsk_noisy_node_gen.log 2>&1

@@ -1,0 +1,12 @@
+{
+    "guidance_type":"single",
+    "guidance_mask_time": 400,
+    "nucleation":{
+        "guidance_time": 1000,
+        "guidance_end_time": 250,
+        "guidance_scale": 0.1
+    },
+    "growing":{
+        "guidance_scale": 0.01
+    }
+}
