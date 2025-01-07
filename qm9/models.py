@@ -47,7 +47,7 @@ def get_model(args, device, dataset_info, dataloader_train, uni_diffusion=False,
         atom_type_pred=args.atom_type_pred if "atom_type_pred" in args else False,
         branch_layers_num=args.branch_layers_num if "branch_layers_num" in args else 0,
         atom_type4prop_pred=args.atom_type4prop_pred if "atom_type4prop_pred" in args else 0,
-        use_ref=args.use_ref if "use_ref" in args else 0,
+        atom_connect_fn=args.atom_connect_fn if "atom_connect_fn" in args else "sum",
         train_prop_pred_4condition_only=args.train_prop_pred_4condition_only if "train_prop_pred_4condition_only"in args else 0,)
     # with open("qm9_model.txt", "w") as f:
     #     f.write(str(net_dynamics))

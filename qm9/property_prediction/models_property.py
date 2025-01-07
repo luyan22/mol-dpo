@@ -1,7 +1,6 @@
 from .models.gcl import E_GCL, unsorted_segment_sum
 import torch
 from torch import nn
-from priors import Atomref
 
 
 class E_GCL_mask(E_GCL):
@@ -88,7 +87,7 @@ class EGNN(nn.Module):
 
 
 class EGNN(nn.Module):
-    def __init__(self, in_node_nf, in_edge_nf, hidden_nf, device='cpu', act_fn=nn.SiLU(), n_layers=4, coords_weight=1.0, attention=False, node_attr=1, atom_disturb=False, later_fusion_h=False, use_ref=False):
+    def __init__(self, in_node_nf, in_edge_nf, hidden_nf, device='cpu', act_fn=nn.SiLU(), n_layers=4, coords_weight=1.0, attention=False, node_attr=1):
         super(EGNN, self).__init__()
         self.in_node_nf = in_node_nf
         self.hidden_nf = hidden_nf
@@ -96,9 +95,6 @@ class EGNN(nn.Module):
         print("device for EGNN: ", device)
         self.device = device
         self.n_layers = n_layers
-        
-        self.atom_disturb = atom_disturb
-        self.later_fusion_h = later_fusion_h
 
         ### Encoder
         self.embedding = nn.Linear(in_node_nf, hidden_nf)
@@ -114,32 +110,9 @@ class EGNN(nn.Module):
                                       act_fn,
                                       nn.Linear(self.hidden_nf, self.hidden_nf))
 
-        if self.later_fusion_h: # For cat
-            self.embedding2 = nn.Linear(in_node_nf, hidden_nf)
-            self.atomtype_add_layer = E_GCL_mask(self.hidden_nf, self.hidden_nf, self.hidden_nf, edges_in_d=in_edge_nf, nodes_attr_dim=n_node_attr, act_fn=act_fn, recurrent=True, coords_weight=coords_weight, attention=attention)           
-            self.node_dec = nn.Sequential(
-                nn.Linear(hidden_nf * 2, hidden_nf),
-                act_fn,
-                nn.Linear(hidden_nf,  hidden_nf),
-            )
-
         self.graph_dec = nn.Sequential(nn.Linear(self.hidden_nf, self.hidden_nf),
                                        act_fn,
                                        nn.Linear(self.hidden_nf, 1))
-
-        self.atom_disturb = atom_disturb
-        self.later_fusion_h = later_fusion_h
-        if self.later_fusion_h:
-            self.atom_type4prop_pred_decoder = nn.Sequential(
-                nn.Linear(self.in_node_nf, hidden_nf), # exclude time
-                act_fn,
-                nn.Linear(hidden_nf, hidden_nf), # in_node_nf = 6 contains time; (or 7 include charge) context_node_nf: conditional generation
-            ) # for atom prediction
-        
-        self.use_ref = use_ref
-        if self.use_ref:
-            self.atomref = Atomref(max_z=100)    
-         
         self.to(self.device)
 
     def forward(self, h0, x, edges, edge_attr, node_mask, edge_mask, n_nodes):
@@ -151,13 +124,14 @@ class EGNN(nn.Module):
         edge_mask [batchsize*n_nodes*n_nodes, 1]
         n_nodes: int
         '''
-        # print(f"input type: h0 type: {type(h0)}, x type: {type(x)}, edges type: {type(edges)}, edge_attr type: {type(edge_attr)}, node_mask type: {type(node_mask)}, edge_mask type: {type(edge_mask)}, n_nodes type: {type(n_nodes)}")
-        # print(f"input dim: h0 size: {h0.size()}, x size: {x.size()}, edges size: {len(edges)}, edge_attr: {edge_attr}, node_mask size: {node_mask.size()}, edge_mask size{edge_mask.size()}, n_nodes size: {n_nodes}")
-        # print("edge size: ", edges[0].size(), edges[1].size())
-        if self.atom_disturb:
-            org_h0 = h0.clone()
-            h0 = torch.ones_like(h0) # simple disturb all atom types
-        
+        assert len(h0.shape) == 2, f"h0 should be 2D tensor, h0.shape is {h0.shape}"
+        assert h0.shape[1] == self.in_node_nf, f"h0 should have the same number of features as input, h0.shape is {h0.shape}"
+        assert len(x.shape) == 2, f"x should be 2D tensor, x.shape is {x.shape}"
+        assert x.shape[1] == 3, f"x should have 3 features, x.shape is {x.shape}"
+        assert len(node_mask.shape) == 2, f"node_mask should be 2D tensor, node_mask.shape is {node_mask.shape}"
+        assert node_mask.shape[1] == 1, f"node_mask should have 1 feature, node_mask.shape is {node_mask.shape}"
+        assert len(edge_mask.shape) == 2, f"edge_mask should be 2D tensor, edge_mask.shape is {edge_mask.shape}"
+        assert edge_mask.shape[1] == 1, f"edge_mask should have 1 feature, edge_mask.shape is {edge_mask.shape}"
         h = self.embedding(h0)
         for i in range(0, self.n_layers):
             if self.node_attr:
@@ -166,29 +140,11 @@ class EGNN(nn.Module):
                 h, _, _ = self._modules["gcl_%d" % i](h, edges, x, node_mask, edge_mask, edge_attr=edge_attr,
                                                       node_attr=None, n_nodes=n_nodes)
 
-        if self.later_fusion_h:
-            # org_h = self.atom_type4prop_pred_decoder(org_h0)
-            org_h = self.embedding2(org_h0)
-            org_h, _, _ = self.atomtype_add_layer(org_h, edges, x, node_mask, edge_mask, edge_attr=edge_attr, node_attr=None, n_nodes=n_nodes)
-            
-            h = torch.cat([h, org_h], dim=1)
-            h = self.node_dec(h)
-        else:
-            h = self.node_dec(h)
+        h = self.node_dec(h)
         h = h * node_mask
         h = h.view(-1, n_nodes, self.hidden_nf)
         h = torch.sum(h, dim=1)
         pred = self.graph_dec(h)
-        
-        if self.use_ref:
-            # return 1 index in the org_h0
-            atom_types = torch.argmax(org_h0, dim=1)
-            atoms_pred = self.atomref(atom_types)
-            atoms_pred = atoms_pred * node_mask
-            atoms_pred = atoms_pred.view(-1, n_nodes)
-            atoms_pred = torch.sum(atoms_pred, dim=1)
-            pred = pred + atoms_pred.unsqueeze(1)
-            return pred.squeeze(1)
         return pred.squeeze(1)
 
 

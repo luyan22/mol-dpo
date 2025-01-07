@@ -15,13 +15,16 @@ import json
 from qm9.analyze import check_stability
 
 
-def get_classifier(dir_path='', device='cpu'):
+def get_classifier(dir_path='', device='cpu', classifier_type='egnn'):
     with open(join(dir_path, 'args.pickle'), 'rb') as f:
         args_classifier = pickle.load(f)
     args_classifier.device = device
-    args_classifier.model_name = 'egnn'
+    args_classifier.model_name = classifier_type # TODO
     classifier = main_qm9_prop.get_model(args_classifier)
-    classifier_state_dict = torch.load(join(dir_path, 'best_checkpoint.npy'), map_location=torch.device('cpu'))
+    if classifier_type == 'egnn':
+        classifier_state_dict = torch.load(join(dir_path, 'best_checkpoint.npy'), map_location=torch.device('cpu'))
+    elif classifier_type == 'uni-gem':
+        classifier_state_dict = torch.load(join(dir_path, 'generative_model_ema.npy'), map_location=torch.device('cpu'))
     classifier.load_state_dict(classifier_state_dict)
 
     return classifier
@@ -123,7 +126,8 @@ class DiffusionDataloader:
             context = self.prop_dist.sample_batch(nodesxsample).to(self.device)
         else:
             context = None
-        
+        print("conditioning: ", self.args_gen.conditioning)
+        print("target property: ", self.args_gen.target_property)
         mean = self.prop_dist.normalizer[self.args_gen.target_property]['mean']
         mad = self.prop_dist.normalizer[self.args_gen.target_property]['mad']
 
@@ -181,13 +185,14 @@ class DiffusionDataloader:
             mae = torch.mean(torch.abs(pseudo_context - pred))
             print("mae:", mae)
         else:
+            print("prop_key: ", prop_key)
             data = {
                 'positions': x.detach(),
                 'atom_mask': node_mask.detach(),
                 'edge_mask': edge_mask.detach(),
                 'one_hot': one_hot.detach(),
                 prop_key: context.detach() if not self.args_gen.property_pred else None,
-                self.args_gen.target_property: pred if self.args_gen.property_pred else None,
+                self.args_gen.target_property: pred if self.args_gen.property_pred else context.detach() if prop_key == self.args_gen.target_property else None,
             }
 
         mol_stable_lst = analyze_stability_for_genmol(one_hot, x, node_mask, self.dataset_info)
@@ -220,7 +225,7 @@ def main_quantitative(args):
     #    class_dir = args.classifiers_path[:-6] + "numnodes_%s" % args.property
     #else:
     class_dir = args.classifiers_path
-    classifier = get_classifier(class_dir).to(args.device)
+    classifier = get_classifier(class_dir, classifier_type=args.classifier_type).to(args.device)
 
     # Get generator and dataloader used to train the generator and evalute the classifier
     args_gen = get_args_gen(args.generators_path)
@@ -248,14 +253,14 @@ def main_quantitative(args):
         print(f"Load condGen_config from file {args.condGenConfig}")
         print("condGen_config: ", condGen_config)
         model.condGen_config = condGen_config
+    else:
+        model.condGen_config = None
     
     if not "dataset_info" in model.__dict__:
         model.dataset_info = get_dataset_info(args_gen.dataset, args_gen.remove_h)
 
     if not "classifier" in model.__dict__:
         model.classifier = classifier
-
-    model.condGenConfig = condGen_config
 
     # Create a dataloader with the generator
     if args_gen.property_pred == 0:
@@ -265,10 +270,13 @@ def main_quantitative(args):
     print("mean: ", mean)
     print("mad: ", mad)
     if args.task == 'edm':
+        if args_gen.target_property == None and len(args_gen.conditioning) == 1:
+            args_gen.target_property = args_gen.conditioning[0]
+            print("EVAL EDM, set target_property to conditioning property: ", args_gen.target_property)
         diffusion_dataloader = DiffusionDataloader(args_gen, model, nodes_dist, prop_dist,
                                                    args.device, batch_size=args.batch_size, iterations=args.iterations, check_stability=args.check_stability)
         print("EDM: We evaluate the classifier on our generated samples")
-        loss = test(args_gen, classifier, 0, diffusion_dataloader, mean, mad, args.property, args.device, 1, args.debug_break)
+        loss = test(args_gen, classifier, 0, diffusion_dataloader, mean, mad, args.property, args.device, 1, args.debug_break, classifier_type=args.classifier_type)
         print("Loss classifier on Generated samples: %.4f" % loss)
     elif args.task == 'qm9_second_half':
         print("qm9_second_half: We evaluate the classifier on QM9")
@@ -346,7 +354,7 @@ if __name__ == "__main__":
     parser.add_argument("--finetune", type=int, default=0,)
     parser.add_argument("--expand_diff", type=int, default=0,)
     
-    #for ours' conditional generation
+    # for ours' conditional generation
     parser.add_argument("--condGenConfig", type=str, default=None,)
     
     #unused args
@@ -357,6 +365,8 @@ if __name__ == "__main__":
 
     # check the stability of the generated samples
     parser.add_argument("--check_stability", type=int, default=0,)
+
+    parser.add_argument("--classifier_type", choices=["egnn", "uni-gem"], default="egnn",)
     
     args = parser.parse_args()
     args.cuda = not args.no_cuda and torch.cuda.is_available()

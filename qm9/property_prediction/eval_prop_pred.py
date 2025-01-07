@@ -128,9 +128,9 @@ def train(model:EGNN_dynamics_QM9, epoch, loader, mean, mad, property, device, p
             if property_pred: #the output of property_pred didn't be reparametered
                 # print("pred: ", pred)
                 # print("label: ", label)
-                # loss = loss_l1(pred, label)
+                loss = loss_l1(pred, label)
                 # loss = loss_l1(pred, (label - mean) / mad)
-                loss = loss_l1(mad * pred + mean, label)
+                # loss = loss_l1(mad * pred + mean, label)
                 # print("loss: ", loss)
             else:
                 loss = loss_l1(pred, label)

@@ -249,6 +249,7 @@ else:
     property_norms = None
 
 args.context_node_nf = context_node_nf
+assert context_node_nf == len(args.conditioning), f"context_node_nf {context_node_nf} not equal to len(args.conditioning){len(args.conditioning)}, this is legal only when self.finetune != 0"
 
 
 # Create EGNN flow

@@ -18,11 +18,12 @@ def compute_loss_and_nll(args, generative_model:EnVariationalDiffusion, nodes_di
         if train_prop_pred_4condition_only:
             print("freeze all parameters except for the blur property prediction head")
             # freeze all parameters except for the property prediction head
-            for parim in generative_model.module.parameters():
+            # for parim in generative_model.module.parameters():
+            for parim in generative_model.parameters():
                 parim.requires_grad = False
-            for parim in generative_model.module.dynamics.blur_node_decode.parameters():
+            for parim in generative_model.dynamics.blur_node_decode.parameters():
                 parim.requires_grad = True
-            for parim in generative_model.module.dynamics.blur_graph_decode.parameters():
+            for parim in generative_model.dynamics.blur_graph_decode.parameters():
                 parim.requires_grad = True
         else:
             pass

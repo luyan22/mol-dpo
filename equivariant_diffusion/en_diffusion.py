@@ -557,7 +557,7 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         return degrees_of_freedom_x * (- log_sigma_x - 0.5 * np.log(2 * np.pi))
 
-    def sample_p_xh_given_z0(self, z0, node_mask, edge_mask, context, fix_noise=False, zt_chain=None, eps_chain=None):
+    def sample_p_xh_given_z0(self, z0, node_mask, edge_mask, context, fix_noise=False, zt_chain=None, eps_t_chain=None):
         """Samples x ~ p(x|z0)."""
         zeros = torch.zeros(size=(z0.size(0), 1), device=z0.device)
         gamma_0 = self.gamma(zeros)
@@ -598,7 +598,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         if zt_chain is not None:
             assert self.parametrization == 'eps', 'zt_chain only works with eps parametrization'
             zt_chain.append(torch.cat([x, h_cat], dim=2))
-            eps_chain.append(net_out)
+            eps_t_chain.append(net_out)
         if self.property_pred:
             return x, h, pred
         return x, h
@@ -1034,7 +1034,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         
         else:
             # print("property_pred: ", self.property_pred)
-            if self.property_pred or self.train_prop_pred_4condition_only:
+            if self.property_pred or train_prop_pred_4condition_only:
                 net_out, property_pred = self.phi(z_t, t, node_mask, edge_mask, context, no_noise_xh=xh)
             else:
                 # Neural net prediction.
@@ -1666,7 +1666,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                     # zt.requires_grad = True
                 eps_t, pred = self.phi(zt, t, node_mask, edge_mask, context, no_noise_xh=no_noise_xh)
             else:
-                eps_t = self.phi(zt, t, node_mask, edge_mask, context, no_noise_xh=no_noise_xh)
+                eps_t = self.phi(zt.detach(), t, node_mask, edge_mask, context, no_noise_xh=no_noise_xh)#
         
         # if pseudo_context is not None:
             # and (t*1000)[0].item() < 100:
@@ -1688,63 +1688,26 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         if self.dynamics.mode == "PAT" or self.atom_type_pred:
             atom_type_pred = eps_t[:, :, 3:]
-            mu = zt / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_t[:,:,0:3]
+            mu = zt / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_t[:,:,0:3].clone()
         else:
-            mu = zt / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_t
+            mu = zt / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_t.clone()
 
         # Compute sigma for p(zs | zt).
         sigma = sigma_t_given_s * sigma_s / sigma_t
-        
-        # if pseudo_context is not None and (t*1000)[0].item() < 100:
-        #     with torch.enable_grad():
-                
-        #         zt = zt.clone().detach().requires_grad_(True)
-        #         loss_fn = torch.nn.L1Loss()
-                
-        #         # Compute gamma_s and gamma_t via the network.
-        #         gamma_s = self.inflate_batch_array(self.gamma(s), zt)
-        #         gamma_t = self.inflate_batch_array(self.gamma(t), zt)
-
-        #         # Compute alpha_t and sigma_t from gamma.
-        #         alpha_t = self.alpha(gamma_t, zt)
-        #         sigma_t = self.sigma(gamma_t, zt)
-                
-        #         if zt.shape[-1] != eps_t.shape[-1]:
-        #             eps_tmp = eps_t[:,:,:3].clone().detach()
-        #         else:
-        #             eps_tmp = eps_t.clone().detach()
-                
-        #         z0 = (zt * node_mask - sigma_t * eps_tmp) / alpha_t
-        #         z0 = diffusion_utils.remove_mean_with_mask(z0,
-        #                                             node_mask)
-        #         t0 = torch.ones_like(t) * 0.001 
-        #         # _, pred = self.phi(zt, t0, node_mask, edge_mask, context)
-                
-                
-        #         _, pred = self.phi(z0, t0, node_mask, edge_mask, context)
-                
-        #         loss = loss_fn(pred, pseudo_context)
-        #         # grad_zt = torch.autograd.grad(loss, zt, create_graph=True)[0]
-        #         # if zt.grad is not None:
-        #         #     zt.grad.zero_()
-        #         loss.backward()
-        #         grad_zt = zt.grad
-        #         print(f't is {(t*1000)[0].item()} grad_zt: {grad_zt[node_mask.squeeze().to(torch.bool)].abs().mean()}, l1 loss: {loss.item()}')
-        #         # self.dynamics.zero_grad()
-        # # and grad_zt[node_mask.squeeze().to(torch.bool)].abs().mean() < 10:
-        #     # pass
-        #     if grad_zt[node_mask.squeeze().to(torch.bool)].abs().mean() < 10:
-        #         # pass
-        #         mu -= sigma * grad_zt
-        #         # / (grad_zt.abs().max() + 1e-9)
 
         # Sample zs given the paramters derived from zt.
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
 
         if zt_chain is not None:
-            assert self.condGenConfig == None, "no guidance in DPO"
-            zt_chain.append(zs[:, :, :self.n_dims])
-            eps_t_chain.append(eps_t[:, :, :self.n_dims])
+            # assert self.condGenConfig == None, "no guidance in DPO"
+            if self.atom_type_pred:
+                zt_chain.append(zs[:, :, :self.n_dims].clone())
+                eps_t_chain.append(eps_t[:, :, :self.n_dims].clone())
+            else:
+                assert zs.shape[-1] == self.n_dims+5+self.include_charges, f"zs shape is not correct, {zs.shape}"
+                zt_chain.append(zs[:, :, :self.n_dims+5].clone())
+                eps_t_chain.append(eps_t[:, :, :self.n_dims+5].clone())
+                
 
         # print(f't is {t[0].item()}, sigma: {sigma[0].item()}, z coeffient: {(1 / alpha_t_given_s)[0][0].item()}, nn output coeffient: {(sigma2_t_given_s / alpha_t_given_s / sigma_t)[0][0].item()}')
         # Project down to avoid numerical runaway of the center of gravity.
@@ -1933,44 +1896,142 @@ class EnVariationalDiffusion(torch.nn.Module):
             node_mask=node_mask)
         return z_x
     
-    def dpo_reward(self, z0, node_mask, edge_mask, context, dpo_beta):
+    # @torch.no_grad()
+    def dpo_reward(self, z, node_mask, edge_mask, context, dpo_beta, mean, mad, reward_func):
         """
         Computes the reward for the DPO algorithm.
         Reward is negative corespond with property prediction loss.
         return gamma=exp(1 / [dpo_beta * r(z,c)])
         """
-        assert len(z0.shape) == 3, "z0 should be of shape (batch_size, n_nodes, n_features)"
-        assert z0.shape[2] == 3 + 5, "z0 should be of shape (batch_size, n_nodes, coord_dim + atom_type_dim)"
+        n_samples = z.shape[0]
+        assert len(z.shape) == 3, "z0 should be of shape (batch_size, n_nodes, n_features)"
+        assert z.shape[2] == 3 + 5, "z0 should be of shape (batch_size, n_nodes, coord_dim + atom_type_dim)"
         t = 1.0 / self.T
-        print("dpo reward t: ", t)
-        t = torch.full((z0.shape[2], 1), t, device=z0.device)
-        z0 = torch.cat([z0, t], dim=2)
-        print("dpo reward z0: ", z0.shape, z0[0])
-        _, pred = self.phi(z0, t, node_mask, edge_mask, context)
-        print("dpo reward pred: ", pred.shape, pred)
-        print("context: ", context.shape)
+        # t = 0.0
+        # print("dpo reward t: ", t)
+        t = torch.full((z.shape[0], 1), t, device=z.device)
+        # print("t: ", t.shape, t[0])
+        # print("dpo reward z0: ", z0.shape, z0[0])
+        if self.atom_type_pred:
+            # print("self.include_charges: ", self.include_charges)
+            z = torch.cat([z[:, :, :self.n_dims], torch.ones_like(z[:, :, 0:5+self.include_charges])], dim=2)
+            # print("z0.shape: ", z0.shape)
+        _, pred = self.phi(z, t, node_mask, edge_mask, context=None) # Predict the property, normalized to [-1, 1]
         loss_fn = torch.nn.L1Loss(reduction='none')
-        loss = loss_fn(pred, context).sum() / pred.shape[0]
+        assert context.shape[0] == n_samples and len(context.shape) == 1, f"context shape {context.shape} should be ({n_samples})"
+        assert context.shape == pred.shape, f"context shape {context.shape} should be equal to pred shape {pred.shape}"
+        loss = loss_fn(pred, (context - mean) / mad).sum() / pred.shape[0] 
+        loss_reparam = loss_fn(pred * mad + mean, context).sum() / pred.shape[0]
+        # assert loss_reparam.mean() < loss.mean(), f"loss_reparam should be smaller than loss, but got {loss_reparam.mean()} and {loss.mean()}"
         print("dpo reward loss: ", loss)
-        gamma = torch.exp(1 / (dpo_beta * loss))
-        return gamma
-        pass
+        print("dpo reward loss_reparam: ", loss_reparam)
+        # gamma = torch.exp(1 / (dpo_beta * loss))
+        if reward_func == "minus":
+            gamma = torch.exp((1 / dpo_beta) * - loss)
+            assert gamma.item() >= 0 and gamma.item() <= 1, f"gamma should be between 0 and 1, but got {gamma.value}"
+        elif reward_func == "exp":
+            gamma = torch.exp((1 / dpo_beta) * torch.exp(-loss))
+        elif reward_func == "inverse":
+            gamma = torch.exp(1 / (dpo_beta * loss))
+        else:
+            assert False, f"reward function {reward_func} not supported"
+        assert gamma.shape == loss_reparam.shape, f"gamma shape {gamma.shape} should be equal to loss shape {loss.shape}"
+        # gamma = torch.zeros_like(gamma)
+        return gamma, loss_reparam
+    
+    def dpo_finetune_step(self, z, ref_zt_chain, ref_eps_t_chain, n_samples, gamma, node_mask, edge_mask, context, fix_noise, conditional_sampling, max_n_nodes, optim, wandb=None, stability_mask=None, lr_dict=None):
+        self.train()
+        if wandb is not None:
+            wandb.log({"gamma": gamma.item()})
 
-    def sample_dpo_chain(self, n_samples, max_n_nodes, node_mask, edge_mask, context, fix_noise=False, conditional_sampling=False):
+        loss_l2 = torch.nn.MSELoss(reduction='none')
+
+        finetune_zt_chain = []
+        finetune_eps_t_chain = []
+
+        assert len(ref_zt_chain) == self.T + 1, f"ref_zt_chain should have length {self.T + 1}, but got {len(ref_zt_chain)}"
+        assert len(ref_eps_t_chain) == self.T, f"ref_eps_t_chain should have length {self.T}, but got {len(ref_eps_t_chain)}"
+
+        print("ref diffusion mode: ", self.dynamics.mode)
+    
+        loss_all = 0
+
+        for s in reversed(range(self.T)):
+            print("finetune step: ", s, flush=True)
+            t = s + 1
+            zt = ref_zt_chain[t] # TODO check id of ref_zt_chain[t]
+            print(f"ref zt {t+1}: ", zt[0][0], flush=True)
+            s_array = torch.full((n_samples, 1), fill_value=s, device=zt.device)
+            t_array = s_array + 1
+            s_array = s_array / self.T
+            t_array = t_array / self.T
+
+            # assert self.dynamics.mode == "PAT" or self.atom_type_pred, "atom type should be predicted"
+            if self.dynamics.mode == "PAT" or self.atom_type_pred:
+                zt[:, :, self.n_dims:] = 1 # set the atom type to 1 for PAT
+
+            
+            if self.dynamics.mode == "PAT" or self.atom_type_pred:
+                assert False, f"use edm to finetune, current mode: {self.dynamics.mode}"
+                self.sample_p_zs_given_zt(s_array, t_array, zt[:,:,0:self.n_dims], node_mask, edge_mask, context, fix_noise=fix_noise, conditional_sampling=conditional_sampling, zt_chain=finetune_zt_chain, eps_t_chain=finetune_eps_t_chain)
+            else:
+                self.sample_p_zs_given_zt(s_array, t_array, zt, node_mask, edge_mask, context, fix_noise=fix_noise, conditional_sampling=conditional_sampling, zt_chain=finetune_zt_chain, eps_t_chain=finetune_eps_t_chain) # 将采样结果记录在列表末端
+
+            gamma_t = self.inflate_batch_array(self.gamma(t_array), zt).detach()
+            alpha_t = self.alpha(gamma_t, zt)
+            sigma_t = self.sigma(t_array, zt)
+            epsilon_t = (zt - alpha_t * z) / sigma_t
+
+            
+            phi_star = finetune_eps_t_chain[-1] # 最后一个是当前结果
+            RHS = phi_star
+            LHS = (gamma * epsilon_t + (1 - gamma) * ref_eps_t_chain[t-1]).detach() # 不需要梯度下降 TODO check id of ref_eps_t_chain[t-1]
+            print("RHS: ", RHS.shape, RHS[0][0])
+            print("LHS: ", LHS.shape, LHS[0][0])
+            assert LHS.requires_grad == False and RHS.requires_grad == True, f"LHS requires grad: {LHS.requires_grad}, RHS requires grad: {RHS.requires_grad}"
+            loss_t = loss_l2(LHS, RHS)
+            loss_t = loss_t.mean(dim=2).squeeze().mean(dim=1).squeeze()
+            assert len(loss_t.shape) == 1 and loss_t.shape[0] == n_samples, f"loss_t shape {loss_t.shape} should be ({n_samples})"
+            loss_t = loss_t * stability_mask # TODO check id of stability_mask
+            stb_rate = stability_mask.sum() / stability_mask.shape[0]
+            # print("stb_rate: ", stb_rate)
+            assert stability_mask.shape == loss_t.shape, f"stability_mask shape {stability_mask.shape} should be equal to loss_t shape {loss_t.shape}"
+            loss_t = loss_t * stability_mask
+            loss_t = loss_t.mean() / stb_rate
+            assert len(loss_t.shape) == 0, f"loss_t shape {loss_t.shape} should be ()"
+            if gamma.item() == 0:
+                print("gamma is 0, loss_t is: ")
+            print("loss_t: ", loss_t)
+            loss_all += loss_t
+            # print("loss_t: ", loss_t)
+            optim.zero_grad()
+            loss_t.backward()
+            for name, param in self.named_parameters():
+                assert param.requires_grad == True, f"param {param} should require grad"
+                # print(name, param.grad.mean().item() if param.grad is not None else "None", flush=True)
+                if param.grad is not None:
+                    param.grad.data.clamp_(-1, 1)
+            if lr_dict is not None:
+                for param_group in optim.param_groups:
+                    print("lr: ", param_group['lr'])
+                    param_group['lr'] = lr_dict[s/self.T]
+            optim.step()
+            if wandb is not None:
+                wandb.log({f"loss": loss_t.item()})
+        return loss_all
+
+    @torch.no_grad()
+    def sample_dpo_chain(self, n_samples, max_n_nodes, node_mask, edge_mask, context, fix_noise=False, conditional_sampling=False, atom_type_need=False):
         """
         存储每一个t的zt与预测的噪声
         """
-        sample_dpo_chain = {"zt": [], "eps_t": []} #下标为t的zt与eps_t
+        self.dynamics.eval()
         zt_chain = []
         eps_t_chain = []
 
-        print("n_samples: ", n_samples)
-        print("n_nodes: ", max_n_nodes)
-        print("node_mask: ", node_mask.shape)
+        assert self.atom_type_pred == 0, "atom type should not be predicted"
         z = self.sample_combined_position_feature_noise(n_samples, max_n_nodes, node_mask) # sample z_T
-        zt_chain.append(z)        
-
-
+        zt_chain.append(z[:, :, :self.n_dims] if self.atom_type_pred else z)        
 
         diffusion_utils.assert_mean_zero_with_mask(z[:, :, :self.n_dims], node_mask)
 
@@ -1987,49 +2048,50 @@ class EnVariationalDiffusion(torch.nn.Module):
             s_array = s_array / self.T
             t_array = t_array / self.T
             
-            assert self.dynamics.mode == "PAT" or self.atom_type_pred, "atom type should be predicted"
+            # assert self.dynamics.mode == "PAT" or self.atom_type_pred, "atom type should be predicted"
             if self.dynamics.mode == "PAT" or self.atom_type_pred:
                 z[:, :, self.n_dims:] = 1 # set the atom type to 1 for PAT
             
-            # TODO uni diffusion, uni generate the molecule and cooorespond property
+            # TODO uni diffusion, uni generate the molecule and corespond property
             #  if uni_diffusion:
             
-            z = self.sample_p_zs_given_zt(s_array, t_array, z[:,:,0:self.n_dims], node_mask, edge_mask, context, fix_noise=fix_noise, conditional_sampling=conditional_sampling, zt_chain=zt_chain, eps_t_chain=eps_t_chain)
+            if self.dynamics.mode == "PAT" or self.atom_type_pred:
+                z = self.sample_p_zs_given_zt(s_array, t_array, z[:,:,0:self.n_dims], node_mask, edge_mask, context, fix_noise=fix_noise, conditional_sampling=conditional_sampling, zt_chain=zt_chain, eps_t_chain=eps_t_chain)
+            else:
+                z = self.sample_p_zs_given_zt(s_array, t_array, z, node_mask, edge_mask, context, fix_noise=fix_noise, conditional_sampling=conditional_sampling, zt_chain=zt_chain, eps_t_chain=eps_t_chain)
 
-        # return sample_dpo_chain
 
         # Finally sample p(x, h | z_0).
-        if self.property_pred:
+        if self.property_pred:   
             if self.atom_type_pred:
                 z[:,:,self.n_dims:] = 1
-            x, h, pred = self.sample_p_xh_given_z0(z, node_mask, edge_mask, context, fix_noise=fix_noise, zt_chain=zt_chain, eps_t_chain=eps_t_chain)
+            x, h, pred = self.sample_p_xh_given_z0(z, node_mask, edge_mask, context, fix_noise=fix_noise)#, zt_chain=zt_chain, eps_t_chain=eps_t_chain
+            assert False, f"property prediction should not be used, current mode: {self.dynamics.mode}"
         else:
             if self.dynamics.mode == "PAT" or self.atom_type_pred:
-                # print("z size after padding 1", z.size())
+                assert False, f"atom type should be predicted, current mode: {self.dynamics.mode}"
                 z[:,:,self.n_dims:] = 1 # set the atom type to 1 for PAT
-            x, h = self.sample_p_xh_given_z0(z, node_mask, edge_mask, context, fix_noise=fix_noise, zt_chain=zt_chain, eps_t_chain=eps_t_chain)
+            x, h = self.sample_p_xh_given_z0(z, node_mask, edge_mask, context, fix_noise=fix_noise)#, zt_chain=zt_chain, eps_t_chain=eps_t_chain
         
 
 
         diffusion_utils.assert_mean_zero_with_mask(x, node_mask)
 
-        assert len(zt_chain) == self.T + 2, "zt_chain should have length T+1"
-        assert len(eps_t_chain) == self.T + 1, "eps_t_chain should have length T"
+        assert len(zt_chain) == self.T + 1, "zt_chain should have length T+1"
+        assert len(eps_t_chain) == self.T, "eps_t_chain should have length T"
         #倒序
         zt_chain = list(reversed(zt_chain))
         eps_t_chain = list(reversed(eps_t_chain))
-        sample_dpo_chain["zt"] = zt_chain
-        sample_dpo_chain["eps_t"] = eps_t_chain
 
         max_cog = torch.sum(x, dim=1, keepdim=True).abs().max().item()
         if max_cog > 5e-2:
             print(f'Warning cog drift with error {max_cog:.3f}. Projecting '
                   f'the positions down.')
             x = diffusion_utils.remove_mean_with_mask(x, node_mask)
-            zt_chain[0] = torch.cat([x, zt_chain[0][:, :, self.n_dims:]], dim=2)
+            # zt_chain[0] = torch.cat([x, zt_chain[0][:, :, self.n_dims:]], dim=2)
         if self.property_pred:
-            return x, h, pred
-        return zt_chain, eps_t_chain
+            return x, h, pred, zt_chain, eps_t_chain
+        return x, h, zt_chain, eps_t_chain
 
     @torch.no_grad()
     def sample_z_in_cond_gen(self, z, n_samples, n_nodes, node_mask, edge_mask, pseudo_context):
@@ -2095,6 +2157,8 @@ class EnVariationalDiffusion(torch.nn.Module):
         # used for uni diffusion
         s_array2_org = torch.full((n_samples, 1), fill_value=-1, device=z.device)
         
+        zt_chain = []
+        eps_chain = []
         
         for s in reversed(range(0, self.T)):
             s_array = torch.full((n_samples, 1), fill_value=s, device=z.device)
@@ -2143,13 +2207,16 @@ class EnVariationalDiffusion(torch.nn.Module):
             elif annel_l:
                 z = self.sample_p_zs_given_zt_annel_lang(s_array, t_array, z, node_mask, edge_mask, context, fix_noise=fix_noise)
             elif self.dynamics.mode == "PAT" or self.atom_type_pred:
-                z = self.sample_p_zs_given_zt(s_array, t_array, z[:,:,:3], node_mask, edge_mask, context, fix_noise=fix_noise, pseudo_context=pseudo_context, mean=mean, mad=mad)
+                # z = self.sample_p_zs_given_zt(s_array, t_array, z[:,:,:3], node_mask, edge_mask, context, fix_noise=fix_noise, pseudo_context=pseudo_context, mean=mean, mad=mad)
+                z = self.sample_p_zs_given_zt(s_array, t_array, z[:,:,:3], node_mask, edge_mask, context, fix_noise=fix_noise, pseudo_context=pseudo_context, mean=mean, mad=mad, zt_chain=zt_chain, eps_t_chain=eps_chain)
             else:
                 z = self.sample_p_zs_given_zt(s_array, t_array, z, node_mask, edge_mask, context, fix_noise=fix_noise, conditional_sampling=conditional_sampling)
+
         # Finally sample p(x, h | z_0).
         if self.property_pred:
             if self.atom_type_pred:
-                z[:,:,self.n_dims:] = 1
+                atom_type_dim = 6 if self.include_charges else 5
+                z[:,:,self.n_dims:self.n_dims+atom_type_dim] = 1
             x, h, pred = self.sample_p_xh_given_z0(z, node_mask, edge_mask, context, fix_noise=fix_noise)
         else:
             if self.dynamics.mode == "PAT" or self.atom_type_pred:

@@ -47,6 +47,8 @@ class EGNN_dynamics_QM9(nn.Module):
         self.atom_type4prop_pred = atom_type4prop_pred
         self.use_ref = use_ref
         self.train_prop_pred_4condition_only = train_prop_pred_4condition_only
+
+        self.atom_type_pred = atom_type_pred
         
         if mode == 'egnn_dynamics':
             
@@ -66,7 +68,9 @@ class EGNN_dynamics_QM9(nn.Module):
                 n_layers=n_layers, attention=attention, tanh=tanh, norm_constant=norm_constant,
                 inv_sublayers=inv_sublayers, sin_embedding=sin_embedding,
                 normalization_factor=normalization_factor,
-                aggregation_method=aggregation_method, condition_decoupling=condition_decoupling, context_basis_dim=context_basis_dim)
+                aggregation_method=aggregation_method, condition_decoupling=condition_decoupling, context_basis_dim=context_basis_dim,
+                condition=context_node_nf, later_fusion=self.atom_type4prop_pred,
+                branch_layers_num=0) # not use uni_gem
 
             if self.decoupling:
                 self.egnn2 = EGNN(
@@ -520,8 +524,9 @@ class EGNN_dynamics_QM9(nn.Module):
         '''
         xh_shape: (bs, n_nodes, 9)
         '''
-        # print("xh_shape: ", xh.shape)
-        # print("xh[0]", xh[0])
+        # print("dynamic：")
+        # for key in self.__dict__.keys():
+        #     print(key, self.__dict__[key])
         if self.mode == 'PAT':
             return self.PAT_forward(t, xh, node_mask, edge_mask, context, t2, mask_y)
         bs, n_nodes, dims = xh.shape
@@ -544,9 +549,10 @@ class EGNN_dynamics_QM9(nn.Module):
         else:
             h = xh[:, self.n_dims:].clone()
         if self.atom_type_pred:
-            assert (h == (torch.ones_like(h).detach() * node_mask)).all(), "h should not be all in 1"
+            assert (h == (torch.ones_like(h).detach() * node_mask)).all(), "h should be all in 1"
         else:
             assert not (h == (torch.ones_like(h).detach() * node_mask)).all(), "h should not be all in 1"
+        assert self.condition_time, "condition_time should be True"
         if self.condition_time:
             if np.prod(t.size()) == 1:
                 # t is the same for all elements in batch.
@@ -595,22 +601,28 @@ class EGNN_dynamics_QM9(nn.Module):
             
             elif self.context_node_nf > 0: # TODO eval
                 context = context.view(bs*n_nodes, self.context_node_nf)
-                print("context_node_nf: ", self.context_node_nf)
+                assert self.context_node_nf == 1, f"context_node_nf should be 1, but got {self.context_node_nf}"
+                assert bs*n_nodes == 2900, f"bs*nodes should be 2900, but got {bs*n_nodes}"
                 h = torch.cat([h, context], dim=1)
 
             else:
-                print(f"ERROR: cannot enbed context {context.shape} in {self.mode} mode")
-        # print("h_shape: ", h.shape)
+                print(f"ERROR: cannot embed context {context.shape} in {self.mode} mode")
+
+
         if self.mode == 'egnn_dynamics':
             if self.use_basis:
                 h_final, x_final, org_h = self.egnn(h, x, edges, node_mask=node_mask, edge_mask=edge_mask, context_basis=context_basis)
             else:
-                h_final, x_final, org_h = self.egnn(h, x, edges, node_mask=node_mask, edge_mask=edge_mask)
+                h_final, x_final, org_h = self.egnn(h, x, edges, node_mask=node_mask, edge_mask=edge_mask, batch_size=bs, n_nodes=n_nodes)
                 
             if self.decoupling:
                 _, _, org_h = self.egnn2(h, x, edges, node_mask=node_mask, edge_mask=edge_mask)
                 
-                
+            for id in range(x_final.shape[0]):
+                if torch.any(torch.isnan((x_final*node_mask)[id])):
+                    print("id: ", id)
+                    print("x_final: ", x_final[id])
+                    print("x: ", x[id])
             vel = (x_final - x) * node_mask  # This masking operation is redundant but just in case
             if self.uni_diffusion:
                 # construct batch for scatter
@@ -680,10 +692,8 @@ class EGNN_dynamics_QM9(nn.Module):
                 h_final, x_final, org_h = self.egnn(h, x, edges, node_mask=node_mask, edge_mask=edge_mask, context_basis=context_basis)
             else:
                 h_final, x_final, org_h = self.egnn(h, x, edges, node_mask=node_mask, edge_mask=edge_mask, batch_size=bs, n_nodes=n_nodes)
-                
             if self.decoupling:
                 _, _, org_h = self.egnn2(h, x, edges, node_mask=node_mask, edge_mask=edge_mask)
-            
             if self.freeze_gradient:
                 distances, _ = coord2diff(x, edges)
                 org_h_pred = org_h
@@ -765,6 +775,11 @@ class EGNN_dynamics_QM9(nn.Module):
         vel = vel.view(bs, n_nodes, -1)
 
         if torch.any(torch.isnan(vel)):
+            for id in range(bs):
+                if torch.any(torch.isnan(vel[id])):
+                    print("id: ", id)
+                    print("vel: ", vel[id])
+                    break
             print('Warning: detected nan, resetting EGNN output to zero.')
             vel = torch.zeros_like(vel)
 

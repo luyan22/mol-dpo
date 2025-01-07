@@ -9,12 +9,13 @@ import json
 from qm9 import dataset, utils
 import pickle
 import numpy as np
+from equivariant_diffusion.en_diffusion import EnVariationalDiffusion
 
 loss_l1 = nn.L1Loss()
 loss_l1_nr = nn.L1Loss(reduction='none')
 
 
-def train(model, epoch, loader, mean, mad, property, device, partition='train', optimizer=None, lr_scheduler=None, log_interval=20, debug_break=False, property_pred=0, target_property=None):
+def train(model, epoch, loader, mean, mad, property, device, partition='train', optimizer=None, lr_scheduler=None, log_interval=20, debug_break=False, property_pred=0, target_property=None, model_type='egnn'):
     if property_pred:
         assert target_property is not None
         print("target_property: ", target_property)
@@ -47,6 +48,7 @@ def train(model, epoch, loader, mean, mad, property, device, partition='train', 
         if property_pred:
             label = data[target_property].to(device, torch.float32)
         else:
+            print("data[property]: ", data[property])
             label = data[property].to(device, torch.float32)
 
         '''
@@ -74,8 +76,19 @@ def train(model, epoch, loader, mean, mad, property, device, partition='train', 
         print(torch.min(label))
         '''
 
-        pred = model(h0=nodes, x=atom_positions, edges=edges, edge_attr=None, node_mask=atom_mask, edge_mask=edge_mask,
+        if model_type == 'egnn':
+            pred = model(h0=nodes, x=atom_positions, edges=edges, edge_attr=None, node_mask=atom_mask, edge_mask=edge_mask,
                      n_nodes=n_nodes)
+        elif model_type == "uni-gem":#TODO
+            zt = torch.cat([atom_positions, nodes])
+            t = torch.full((batch_size, 1), fill_value=0.001, device=zt.device)
+            node_mask = atom_mask
+            context = None
+            no_noise_xh = False
+            _, pred = model.phi(nodes, atom_positions, edges, edge_attr=None, node_mask=atom_mask, edge_mask=edge_mask,)
+            eps_t, pred = model.phi(zt, t, node_mask, edge_mask, context, no_noise_xh=no_noise_xh)
+        else:
+            raise Exception("Wrong model type %s" % model_type)
 
         if partition == 'train':
             loss = loss_l1(pred, (label - mean) / mad)
@@ -90,7 +103,7 @@ def train(model, epoch, loader, mean, mad, property, device, partition='train', 
                 label = label.squeeze(1)
                 print("label: ", label)
                 # loss = loss_l1(pred, label)
-                loss = loss_l1(mad * pred + mean, label) # TODO
+                loss = loss_l1(mad * pred + mean, label)
                 # loss = loss_l1(mad * pred + mean, label)
                 print("loss: ", loss)
             else:
@@ -100,12 +113,11 @@ def train(model, epoch, loader, mean, mad, property, device, partition='train', 
             eval_stability = True
             print("eval stability")
             print("property: ", property)
-            # if property == "lumo" or property == "homo" or property == "gap": # UNI-GEM as classifier
+            # if property == "lumo" or property == "homo" or property == "gap":
             #      c_loss_lst = loss_l1_nr(pred, label)
             # else:
             #      c_loss_lst = loss_l1_nr(mad * pred + mean, label) 
-            c_loss_lst = loss_l1_nr(mad * pred + mean, label) # EGNN as classifier
-
+            c_loss_lst = loss_l1_nr(mad * pred + mean, label) # use egnn as classifier
             c_loss_lst = c_loss_lst.cpu().detach().tolist()
             loss_lst.extend(c_loss_lst)
             stable_lst.extend(data['stability'])
@@ -142,23 +154,26 @@ def train(model, epoch, loader, mean, mad, property, device, partition='train', 
     return res['loss'] / res['counter']
 
 
-def test(args_gen, model, epoch, loader, mean, mad, property, device, log_interval, debug_break=False):
+def test(args_gen, model, epoch, loader, mean, mad, property, device, log_interval, debug_break=False, classifier_type='egnn'):
     if not "property_pred" in args_gen:
         args_gen.property_pred = False
     if not "target_property" in args_gen:
         args_gen.target_property = None
-    return train(model, epoch, loader, mean, mad, property, device, partition='test', log_interval=log_interval, debug_break=debug_break, property_pred=args_gen.property_pred, target_property=args_gen.target_property)
+    return train(model, epoch, loader, mean, mad, property, device, partition='test', log_interval=log_interval, debug_break=debug_break, property_pred=args_gen.property_pred, target_property=args_gen.target_property, model_type=classifier_type)
 
 
 def get_model(args):
     if args.model_name == 'egnn':
         model = EGNN(in_node_nf=5, in_edge_nf=0, hidden_nf=args.nf, device=args.device, n_layers=args.n_layers,
                      coords_weight=1.0,
-                     attention=args.attention, node_attr=args.node_attr, atom_disturb=args.atom_disturb, later_fusion_h=args.later_fusion_h, use_ref=args.use_ref)
+                     attention=args.attention, node_attr=args.node_attr)
         #change the in_node_nf to 22 to adapt the one_hot dimension
         # model = EGNN(in_node_nf=22, in_edge_nf=0, hidden_nf=args.nf, device=args.device, n_layers=args.n_layers,
         #              coords_weight=1.0,
         #              attention=args.attention, node_attr=args.node_attr)
+    elif args.model_name == "uni-gem":
+        model = EnVariationalDiffusion()
+        pass
     elif args.model_name == 'naive':
         model = Naive(device=args.device)
     elif args.model_name == 'numnodes':
@@ -221,9 +236,6 @@ if __name__ == "__main__":
                         help='egnn | naive | numnodes')
     parser.add_argument('--save_model', type=eval, default=True)
     parser.add_argument('--finetune', type=int, default=0,)
-    parser.add_argument('--atom_disturb', type=int, default=0,)
-    parser.add_argument('--later_fusion_h', type=int, default=0,)
-    parser.add_argument('--use_ref', type=int, default=0,)
 
     args = parser.parse_args()
     args.cuda = not args.no_cuda and torch.cuda.is_available()

@@ -39,7 +39,9 @@ def train_epoch(args, loader, epoch, model, model_dp, model_ema, ema, device, dt
     
     if args.denoise_pretrain:
         mask_indicator = 2
-    
+
+    if property_norms is not None:
+        print("finish label normalization")
     
     
     for i, data in enumerate(loader):
@@ -103,7 +105,6 @@ def train_epoch(args, loader, epoch, model, model_dp, model_ema, ema, device, dt
             if args.target_property in data:
                 property_label = data[args.target_property].to(device, dtype)
                 if property_norms is not None:
-                    print("finish label normalization")
                     property_label = (property_label - property_norms[args.target_property]['mean']) / property_norms[args.target_property]['mad']
             else:
                 property_label = None
