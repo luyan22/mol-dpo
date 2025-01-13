@@ -1605,7 +1605,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         
 
     def sample_p_zs_given_zt(self, s, t, zt, node_mask, edge_mask, context, fix_noise=False, yt=None, ys=None, force_t_zero=False, force_t2_zero=False, pseudo_context=None, mean=None, mad=None,conditional_sampling=False, no_noise_xh=None,
-    zt_chain=None, eps_t_chain=None):
+    zt_chain=None, eps_t_chain=None, mu_chain=None):
         """Samples from zs ~ p(zs | zt). Only used during sampling."""
         gamma_s = self.gamma(s)
         gamma_t = self.gamma(t)
@@ -1691,6 +1691,9 @@ class EnVariationalDiffusion(torch.nn.Module):
             mu = zt / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_t[:,:,0:3].clone()
         else:
             mu = zt / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_t.clone()
+
+        if mu_chain is not None:
+            mu_chain.append(mu.clone())
 
         # Compute sigma for p(zs | zt).
         sigma = sigma_t_given_s * sigma_s / sigma_t
@@ -1920,14 +1923,14 @@ class EnVariationalDiffusion(torch.nn.Module):
         loss_fn = torch.nn.L1Loss(reduction='none')
         assert context.shape[0] == n_samples and len(context.shape) == 1, f"context shape {context.shape} should be ({n_samples})"
         assert context.shape == pred.shape, f"context shape {context.shape} should be equal to pred shape {pred.shape}"
-        loss = loss_fn(pred, (context - mean) / mad).sum() / pred.shape[0] 
-        loss_reparam = loss_fn(pred * mad + mean, context).sum() / pred.shape[0]
+        loss = loss_fn(pred, context).sum() / pred.shape[0] 
+        loss_reparam = loss_fn(pred * mad + mean, context * mad + mean).sum() / pred.shape[0]
         # assert loss_reparam.mean() < loss.mean(), f"loss_reparam should be smaller than loss, but got {loss_reparam.mean()} and {loss.mean()}"
-        print("dpo reward loss: ", loss)
-        print("dpo reward loss_reparam: ", loss_reparam)
+        # print("dpo reward loss: ", loss)
+        # print("dpo reward loss_reparam: ", loss_reparam)
         # gamma = torch.exp(1 / (dpo_beta * loss))
         if reward_func == "minus":
-            gamma = torch.exp((1 / dpo_beta) * - loss)
+            gamma = torch.exp((1 / dpo_beta) * (-loss))
             assert gamma.item() >= 0 and gamma.item() <= 1, f"gamma should be between 0 and 1, but got {gamma.value}"
         elif reward_func == "exp":
             gamma = torch.exp((1 / dpo_beta) * torch.exp(-loss))
@@ -1939,7 +1942,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         # gamma = torch.zeros_like(gamma)
         return gamma, loss_reparam
     
-    def dpo_finetune_step(self, z, ref_zt_chain, ref_eps_t_chain, n_samples, gamma, node_mask, edge_mask, context, fix_noise, conditional_sampling, max_n_nodes, optim, wandb=None, stability_mask=None, lr_dict=None):
+    def dpo_finetune_step(self, z, ref_zt_chain, ref_eps_t_chain, mu_chain, n_samples, gamma, node_mask, edge_mask, context, fix_noise, conditional_sampling, max_n_nodes, optim, wandb=None, stability_mask=None, lr_dict=None, training_scheduler="increase_t"):
         self.train()
         if wandb is not None:
             wandb.log({"gamma": gamma.item()})
@@ -1951,16 +1954,24 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         assert len(ref_zt_chain) == self.T + 1, f"ref_zt_chain should have length {self.T + 1}, but got {len(ref_zt_chain)}"
         assert len(ref_eps_t_chain) == self.T, f"ref_eps_t_chain should have length {self.T}, but got {len(ref_eps_t_chain)}"
+        assert len(mu_chain) == self.T, f"mu_chain should have length {self.T}, but got {len(mu_chain)}"
 
         print("ref diffusion mode: ", self.dynamics.mode)
     
         loss_all = 0
 
-        for s in reversed(range(self.T)):
+        assert training_scheduler in ["increase_t", "decrease_t", "random"], f"training_scheduler should be increase_t or decrease_t or random, but got {training_scheduler}"
+
+        t_range = range(self.T) if training_scheduler == "increase_t" else reversed(range(self.T))
+
+        for s in t_range:
+            import random
+            if training_scheduler == "random":
+                s = random.randint(0, self.T-1)
             print("finetune step: ", s, flush=True)
             t = s + 1
             zt = ref_zt_chain[t] # TODO check id of ref_zt_chain[t]
-            print(f"ref zt {t+1}: ", zt[0][0], flush=True)
+            mu = mu_chain[s] # TODO check id of mu_chain[s]
             s_array = torch.full((n_samples, 1), fill_value=s, device=zt.device)
             t_array = s_array + 1
             s_array = s_array / self.T
@@ -1970,52 +1981,53 @@ class EnVariationalDiffusion(torch.nn.Module):
             if self.dynamics.mode == "PAT" or self.atom_type_pred:
                 zt[:, :, self.n_dims:] = 1 # set the atom type to 1 for PAT
 
-            
+
             if self.dynamics.mode == "PAT" or self.atom_type_pred:
                 assert False, f"use edm to finetune, current mode: {self.dynamics.mode}"
                 self.sample_p_zs_given_zt(s_array, t_array, zt[:,:,0:self.n_dims], node_mask, edge_mask, context, fix_noise=fix_noise, conditional_sampling=conditional_sampling, zt_chain=finetune_zt_chain, eps_t_chain=finetune_eps_t_chain)
             else:
+                # print("context: ", context.shape, context[0])
                 self.sample_p_zs_given_zt(s_array, t_array, zt, node_mask, edge_mask, context, fix_noise=fix_noise, conditional_sampling=conditional_sampling, zt_chain=finetune_zt_chain, eps_t_chain=finetune_eps_t_chain) # 将采样结果记录在列表末端
 
             gamma_t = self.inflate_batch_array(self.gamma(t_array), zt).detach()
             alpha_t = self.alpha(gamma_t, zt)
             sigma_t = self.sigma(t_array, zt)
-            epsilon_t = (zt - alpha_t * z) / sigma_t
+            epsilon_t = (zt - (alpha_t * z)) / sigma_t
 
             
             phi_star = finetune_eps_t_chain[-1] # 最后一个是当前结果
             RHS = phi_star
             LHS = (gamma * epsilon_t + (1 - gamma) * ref_eps_t_chain[t-1]).detach() # 不需要梯度下降 TODO check id of ref_eps_t_chain[t-1]
-            print("RHS: ", RHS.shape, RHS[0][0])
-            print("LHS: ", LHS.shape, LHS[0][0])
+            # print("RHS: ", RHS.shape, RHS[0][0])
+            # print("LHS: ", LHS.shape, LHS[0][0])
             assert LHS.requires_grad == False and RHS.requires_grad == True, f"LHS requires grad: {LHS.requires_grad}, RHS requires grad: {RHS.requires_grad}"
             loss_t = loss_l2(LHS, RHS)
-            loss_t = loss_t.mean(dim=2).squeeze().mean(dim=1).squeeze()
+            loss_t = loss_t.mean(dim=2).mean(dim=1)
             assert len(loss_t.shape) == 1 and loss_t.shape[0] == n_samples, f"loss_t shape {loss_t.shape} should be ({n_samples})"
-            loss_t = loss_t * stability_mask # TODO check id of stability_mask
             stb_rate = stability_mask.sum() / stability_mask.shape[0]
             # print("stb_rate: ", stb_rate)
-            assert stability_mask.shape == loss_t.shape, f"stability_mask shape {stability_mask.shape} should be equal to loss_t shape {loss_t.shape}"
+            assert stability_mask.shape == loss_t.shape and stability_mask.shape[0] == n_samples, f"stability_mask shape {stability_mask.shape} should be equal to loss_t shape {loss_t.shape}"
             loss_t = loss_t * stability_mask
             loss_t = loss_t.mean() / stb_rate
             assert len(loss_t.shape) == 0, f"loss_t shape {loss_t.shape} should be ()"
             if gamma.item() == 0:
                 print("gamma is 0, loss_t is: ")
-            print("loss_t: ", loss_t)
+            print("loss_t: ", loss_t, flush=True)
             loss_all += loss_t
             # print("loss_t: ", loss_t)
             optim.zero_grad()
             loss_t.backward()
-            for name, param in self.named_parameters():
-                assert param.requires_grad == True, f"param {param} should require grad"
-                # print(name, param.grad.mean().item() if param.grad is not None else "None", flush=True)
-                if param.grad is not None:
-                    param.grad.data.clamp_(-1, 1)
+            # for name, param in self.named_parameters():
+            #     assert param.requires_grad == True, f"param {param} should require grad"
+            #     # print(name, param.grad.mean().item() if param.grad is not None else "None", flush=True)
+            #     if param.grad is not None:
+            #         param.grad.data.clamp_(-1, 1)
             if lr_dict is not None:
                 for param_group in optim.param_groups:
                     print("lr: ", param_group['lr'])
                     param_group['lr'] = lr_dict[s/self.T]
             optim.step()
+            optim.zero_grad()
             if wandb is not None:
                 wandb.log({f"loss": loss_t.item()})
         return loss_all
@@ -2028,6 +2040,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         self.dynamics.eval()
         zt_chain = []
         eps_t_chain = []
+        mu_chain = []
 
         assert self.atom_type_pred == 0, "atom type should not be predicted"
         z = self.sample_combined_position_feature_noise(n_samples, max_n_nodes, node_mask) # sample z_T
@@ -2056,9 +2069,10 @@ class EnVariationalDiffusion(torch.nn.Module):
             #  if uni_diffusion:
             
             if self.dynamics.mode == "PAT" or self.atom_type_pred:
+                assert False, f"use edm to finetune, current mode: {self.dynamics.mode}"
                 z = self.sample_p_zs_given_zt(s_array, t_array, z[:,:,0:self.n_dims], node_mask, edge_mask, context, fix_noise=fix_noise, conditional_sampling=conditional_sampling, zt_chain=zt_chain, eps_t_chain=eps_t_chain)
             else:
-                z = self.sample_p_zs_given_zt(s_array, t_array, z, node_mask, edge_mask, context, fix_noise=fix_noise, conditional_sampling=conditional_sampling, zt_chain=zt_chain, eps_t_chain=eps_t_chain)
+                z = self.sample_p_zs_given_zt(s_array, t_array, z, node_mask, edge_mask, context, fix_noise=fix_noise, conditional_sampling=conditional_sampling, zt_chain=zt_chain, eps_t_chain=eps_t_chain, mu_chain=mu_chain)
 
 
         # Finally sample p(x, h | z_0).
@@ -2079,9 +2093,11 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         assert len(zt_chain) == self.T + 1, "zt_chain should have length T+1"
         assert len(eps_t_chain) == self.T, "eps_t_chain should have length T"
+        assert len(mu_chain) == self.T, "mu_chain should have length T"
         #倒序
         zt_chain = list(reversed(zt_chain))
         eps_t_chain = list(reversed(eps_t_chain))
+        mu_chain = list(reversed(mu_chain))
 
         max_cog = torch.sum(x, dim=1, keepdim=True).abs().max().item()
         if max_cog > 5e-2:
@@ -2090,8 +2106,8 @@ class EnVariationalDiffusion(torch.nn.Module):
             x = diffusion_utils.remove_mean_with_mask(x, node_mask)
             # zt_chain[0] = torch.cat([x, zt_chain[0][:, :, self.n_dims:]], dim=2)
         if self.property_pred:
-            return x, h, pred, zt_chain, eps_t_chain
-        return x, h, zt_chain, eps_t_chain
+            return x, h, pred, zt_chain, eps_t_chain, mu_chain
+        return x, h, zt_chain, eps_t_chain, mu_chain
 
     @torch.no_grad()
     def sample_z_in_cond_gen(self, z, n_samples, n_nodes, node_mask, edge_mask, pseudo_context):

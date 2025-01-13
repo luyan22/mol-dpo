@@ -6,9 +6,10 @@ from eval_conditional_qm9 import analyze_stability_for_genmol
 from qm9.models import DistributionProperty
 import time
 from qm9.property_prediction import prop_utils
+import random
 
 class DPO(torch.nn.Module):
-    def __init__(self, ref_args, model_ref:EnVariationalDiffusion, model_reward:EnVariationalDiffusion, beta, lr, optim, num_epochs, nodes_dist, dataset_info, device, dataloaders, prop_dist:DistributionProperty, ref_model_type, reward_func, reward_network_type):
+    def __init__(self, ref_args, model_ref:EnVariationalDiffusion, model_reward:EnVariationalDiffusion, beta, lr, optim, num_epochs, nodes_dist, dataset_info, device, dataloaders, prop_dist:DistributionProperty, ref_model_type, reward_func, reward_network_type, lr_scheduler):
         super(DPO, self).__init__()
         self.model_ref = copy.deepcopy(model_ref)
         self.model_ref.to(device)
@@ -29,6 +30,8 @@ class DPO(torch.nn.Module):
 
         self.reward_func=reward_func
         self.reward_network_type=reward_network_type
+
+        self.lr_scheduler = lr_scheduler
 
         self.max_n_nodes = self.dataset_info["max_n_nodes"]
 
@@ -64,7 +67,7 @@ class DPO(torch.nn.Module):
             n_samples = batch_size
             mad = self.mad
             mean = self.mean
-            print("n_nodes:", max_nodes)
+            # print("n_nodes:", max_nodes)
             nodes = nodes.view(batch_size * max_nodes, -1)
             atom_positions = z[:, :, 0:3].view(batch_size * max_nodes, -1)
             device = nodes.device
@@ -77,14 +80,14 @@ class DPO(torch.nn.Module):
             loss_fn = torch.nn.L1Loss(reduction='none')
             assert context.shape[0] == n_samples and len(context.shape) == 1, f"context shape {context.shape} should be ({n_samples})"
             assert context.shape == pred.shape, f"context shape {context.shape} should be equal to pred shape {pred.shape}"
-            loss = loss_fn(pred, (context - mean) / mad).sum() / pred.shape[0] 
-            loss_reparam = loss_fn(pred * mad + mean, context).sum() / pred.shape[0]
+            loss = loss_fn(pred, context).sum() / pred.shape[0] 
+            loss_reparam = loss_fn(pred * mad + mean, context * mad + mean).sum() / pred.shape[0]
             # assert loss_reparam.mean() < loss.mean(), f"loss_reparam should be smaller than loss, but got {loss_reparam.mean()} and {loss.mean()}"
-            print("dpo reward loss: ", loss)
-            print("dpo reward loss_reparam: ", loss_reparam)
+            # print("dpo reward loss: ", loss)
+            # print("dpo reward loss_reparam: ", loss_reparam)
      
             if reward_func == "minus":
-                gamma = torch.exp((1 / dpo_beta) * - loss)
+                gamma = torch.exp((1 / dpo_beta) * (-loss))
                 assert gamma.item() >= 0 and gamma.item() <= 1, f"gamma should be between 0 and 1, but got {gamma.value}"
             elif reward_func == "exp":
                 gamma = torch.exp((1 / dpo_beta) * torch.exp(-loss))
@@ -101,18 +104,33 @@ class DPO(torch.nn.Module):
             assert False, f"reward_network_type {self.reward_network_type} not supported"
         return gamma, prop_loss
 
-
+    def mu_chain_reward_calc(self, mu_chain, n_samples, max_n_nodes, node_mask, edge_mask, context, wandb=None):
+        mu_prop_loss = []
+        for t, mu in enumerate(mu_chain):
+            assert len(mu.shape) == 3 and mu.shape[0] == n_samples and mu.shape[1] == self.max_n_nodes and mu.shape[2] == 8, f"mu shape {mu.shape} should be ({n_samples}, {self.max_n_nodes}, 8)"
+            gamma, prop_loss = self.gamma_pred(z=mu, context=context, node_mask=node_mask, edge_mask=edge_mask, max_nodes=self.max_n_nodes)
+            gamma = gamma.detach()
+            prop_loss = prop_loss.detach()
+            # print("t: ", t, "prop_loss: ", prop_loss)
+            mu_prop_loss.append(prop_loss)
+            if wandb is not None:
+                wandb.log({"prop_loss_t": prop_loss})
+        return mu_prop_loss
     
-    def train_step(self, n_samples, n_nodes, node_mask, edge_mask, context, fix_noise=False, conditional_sampling=False, pseudo_context=None, wandb=None):
+    def train_step(self, n_samples, n_nodes, node_mask, edge_mask, context, fix_noise=False, conditional_sampling=False, wandb=None, sample_chain=None):
         # TODO
         if self.model_ref.property_pred: # x, h, pred are not used
             assert False, "Currently use edm, not supported"
             _, _, _, ref_zt_chain, ref_eps_t_chain = self.model_ref.sample_dpo_chain(max_n_nodes=self.max_n_nodes, n_samples=n_samples, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=fix_noise, conditional_sampling=conditional_sampling)
         else:
-            x, h, ref_zt_chain, ref_eps_t_chain = self.model_ref.sample_dpo_chain(max_n_nodes=self.max_n_nodes, n_samples=n_samples, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=fix_noise, conditional_sampling=conditional_sampling)
-        
+            if sample_chain is None:
+                x, h, ref_zt_chain, ref_eps_t_chain, mu_chain = self.model_ref.sample_dpo_chain(max_n_nodes=self.max_n_nodes, n_samples=n_samples, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=fix_noise, conditional_sampling=conditional_sampling)
+                mu_prop_loss_chain = self.mu_chain_reward_calc(mu_chain, n_samples, self.max_n_nodes, node_mask, edge_mask, context, wandb=wandb)
+            else:
+                x, h, ref_zt_chain, ref_eps_t_chain, mu_chain, mu_prop_loss_chain = sample_chain["x"], sample_chain["h"], sample_chain["zt_chain"], sample_chain["eps_t_chain"], sample_chain["mu_chain"], sample_chain["mu_prop_loss_chain"]
         ref_zt_chain = [z.detach() for z in ref_zt_chain]
         ref_eps_t_chain = [eps.detach() for eps in ref_eps_t_chain]
+        mu_chain = [mu.detach() for mu in mu_chain]
 
         xh = torch.cat([x, h["categorical"]], dim=-1)
         if self.args.include_charges:
@@ -122,7 +140,7 @@ class DPO(torch.nn.Module):
         stability_lst = analyze_stability_for_genmol(one_hot=xh[:,:,3:8].detach(), x=xh[:,:,0:3].detach(), node_mask=node_mask, dataset_info=self.dataset_info) # eval the stability of samples
         print("stability_lst: ", stability_lst)
         print("sampled chain mol stability: ", stability_lst.count(True)/len(stability_lst))
-        stability_mask = torch.tensor(stability_lst, dtype=torch.bool, device=self.device)
+        stability_mask = torch.tensor(stability_lst, dtype=torch.float32, device=self.device)
 
         print("finish chain sampling")
 
@@ -135,9 +153,10 @@ class DPO(torch.nn.Module):
         if wandb is not None:
             wandb.log({"prop_loss": prop_loss})
 
-        self.model_finetune.dpo_finetune_step(z=xh, ref_zt_chain=ref_zt_chain, ref_eps_t_chain=ref_eps_t_chain, n_samples=n_samples, gamma=gamma, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=fix_noise, conditional_sampling=conditional_sampling, max_n_nodes=self.max_n_nodes, optim=self.optim, wandb=wandb, stability_mask=stability_mask, lr_dict=self.lr_dict())
+        self.model_finetune.dpo_finetune_step(z=xh, ref_zt_chain=ref_zt_chain, ref_eps_t_chain=ref_eps_t_chain, mu_chain=mu_chain, n_samples=n_samples, gamma=gamma, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=fix_noise, conditional_sampling=conditional_sampling, max_n_nodes=self.max_n_nodes, optim=self.optim, wandb=wandb, stability_mask=stability_mask, lr_dict=self.lr_dict(mu_prop_loss_chain), training_scheduler=self.training_scheduler)
 
-        pass
+        sample_chain = {"x": x, "h": h, "zt_chain": ref_zt_chain, "eps_t_chain": ref_eps_t_chain, "mu_chain":mu_chain, "mu_prop_loss_chain": mu_prop_loss_chain, "node_mask": node_mask, "edge_mask": edge_mask, "context": context, "gamma": gamma}
+        return sample_chain
 
     def prepare_masks(self, n_samples):
          # prepare data for sampling, mimic from qm9/sampling.py sample & eval_conditional_qm9 sample
@@ -158,44 +177,73 @@ class DPO(torch.nn.Module):
 
         return nodesxsample, node_mask, edge_mask
     
-    def prepare_pseudo_context(self, n_samples, nodesxsample):
+    def prepare_pseudo_context(self, n_samples, nodesxsample, node_mask):
         # prepare pseudo context for conditional sampling, mimic from eval_conditional_qm9 DiffusionDataloader.sample
         pseudo_context = self.prop_dist.sample_batch(nodesxsample).to(self.device)
         # pseudo_context = pseudo_context * self.prop_dist.normalizer[self.target_property]['mad'] + self.prop_dist.normalizer[self.target_property]['mean']
         assert self.mean == self.prop_dist.normalizer[self.target_property]['mean'], f"mean of target property is different from the mean of the dataset, self.mean: {self.mean} vs  prop_dist.normalizer[self.args.target_property]['mean']: {self.prop_dist.normalizer[self.target_property]['mean']}"
 
-        pseudo_context = pseudo_context * self.mad + self.mean
+        # pseudo_context = pseudo_context * self.mad + self.mean
 
         # pseudo_context.shape = (n_samples, 1)
         assert self.max_n_nodes == 29, "max_n_nodes should be 29 for QM9"
         context = pseudo_context.view(n_samples, 1, 1).repeat(1, self.max_n_nodes, 1)
         assert context.shape == (n_samples, self.max_n_nodes, 1), f"context.shape: {context.shape}"
-        # context.shape = (n_samples, max_nodes, 1)
-        return pseudo_context, context # 不同只体现在维度上
 
-    def lr_dict(self):
+        assert context.shape == node_mask.shape, f"context.shape: {context.shape} should be equal to node_mask.shape: {node_mask.shape}"
+        context = context * node_mask
+        # context.shape = (n_samples, max_nodes, 1)
+        return context
+
+    def lr_dict(self, mu_prop_loss_chain=None):
         '''
         TODO
         construct a dictionary of learning rate for each time step
-        linearly decrease from args.lr to 0, 1 is biggest and 0 is smallest
+        choices=["importance_sampling", "linear_decay"]
         '''
         lr_dict = {}
-        for t_int in range(self.T):
-            t = float(t_int) / self.T
-            lr_dict[t] = self.lr * t
+        if self.lr_scheduler == "importance_sampling":
+            sum_prop_loss = sum(mu_prop_loss_chain)
+            for t_int in range(self.T):
+                lr_dict[t_int] = self.lr * (mu_prop_loss_chain[t_int] / sum_prop_loss)
+            pass
+        elif self.lr_scheduler == "linear_decay": 
+            for t_int in range(self.T):
+                t = float(t_int) / self.T
+                lr_dict[t] = self.lr * t
+        else:
+            assert False, f"lr_scheduler {self.lr_scheduler} not supported"
         return lr_dict
 
-    def train(self, n_samples, wandb=None, eval_interval=0):
+    def train(self, n_samples, wandb=None, eval_interval=0, training_scheduler="increase_t"):
+        self.training_scheduler = training_scheduler
+        dpo_chain_lst = []
         for epoch in range(self.num_epochs):
             epoch_start_time = time.time()
             print("Epoch: ", epoch)
             if wandb is not None:
                 wandb.log({"Epoch": epoch})
             nodesxsample, node_mask, edge_mask = self.prepare_masks(n_samples)
+            assert node_mask.shape == ( n_samples, self.max_n_nodes, 1), f"node_mask.shape: {node_mask.shape}"
 
-            pseudo_context, context = self.prepare_pseudo_context(n_samples, nodesxsample) # different only in the dimensionality of the context
+            context = self.prepare_pseudo_context(n_samples, nodesxsample, node_mask) # different only in the dimensionality of the context
 
-            self.train_step(n_samples=n_samples, n_nodes=nodesxsample, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=False, conditional_sampling=False, pseudo_context=pseudo_context, wandb=wandb) # TODO more data needed for conditional sampling
+            if len(dpo_chain_lst):
+                # TODO use previous sample_chain as input for next sample_chain
+                new_sample = random.random()
+                if new_sample < 0.5:
+                    node_mask = dpo_chain_lst[-1]["node_mask"]
+                    edge_mask = dpo_chain_lst[-1]["edge_mask"]
+                    context = dpo_chain_lst[-1]["context"]
+                    sample_chain = self.train_step(n_samples=n_samples, n_nodes=nodesxsample, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=False, conditional_sampling=False, wandb=wandb, sample_chain=dpo_chain_lst[-1]) # TODO more data needed for conditional sampling
+                else:
+                    sample_chain = self.train_step(n_samples=n_samples, n_nodes=nodesxsample, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=False, conditional_sampling=False, wandb=wandb) # TODO more data needed for conditional sampling
+                dpo_chain_lst.append(sample_chain)
+            else:
+                sample_chain = self.train_step(n_samples=n_samples, n_nodes=nodesxsample, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=False, conditional_sampling=False, wandb=wandb) # TODO more data needed for conditional sampling
+                dpo_chain_lst.append(sample_chain)
+
+
             epoch_end_time = time.time()
             print("Epoch training time: ", epoch_end_time - epoch_start_time)
             if wandb is not None:
@@ -213,13 +261,13 @@ class DPO(torch.nn.Module):
     def eval(self, n_samples, stability_eval=True, fix_noise=False, conditional_sampling=False, wandb=None): # TODO
         print(f"Evaluating model on {n_samples} samples")
         nodesxsample, node_mask, edge_mask = self.prepare_masks(n_samples)
-        pseudo_context, context = self.prepare_pseudo_context(n_samples, nodesxsample) # different only in the dimensionality of the context
+        context = self.prepare_pseudo_context(n_samples, nodesxsample, node_mask) # different only in the dimensionality of the context
         self.model_finetune.sample_chain(n_samples=n_samples, n_nodes=self.max_n_nodes, node_mask=node_mask, edge_mask=edge_mask, context=context)
         if self.model_finetune.property_pred: # x, h, pred are not used
             assert False, "DGAP conditional generation not supported"
             _, _, _, zt_chain, eps_t_chain = self.model_finetune.sample_dpo_chain(max_n_nodes=self.max_n_nodes, n_samples=n_samples, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=fix_noise, conditional_sampling=conditional_sampling)
         else:
-            x, h, zt_chain, eps_t_chain = self.model_finetune.sample_dpo_chain(max_n_nodes=self.max_n_nodes, n_samples=n_samples, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=fix_noise, conditional_sampling=conditional_sampling)
+            x, h, zt_chain, eps_t_chain, mu_chain = self.model_finetune.sample_dpo_chain(max_n_nodes=self.max_n_nodes, n_samples=n_samples, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=fix_noise, conditional_sampling=conditional_sampling)
             # _, _, zt_chain, eps_t_chain = self.model_ref.sample_dpo_chain(max_n_nodes=self.max_n_nodes, n_samples=n_samples, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=fix_noise, conditional_sampling=conditional_sampling)
         
         zt_chain = [z.detach() for z in zt_chain]

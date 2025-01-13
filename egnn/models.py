@@ -602,8 +602,9 @@ class EGNN_dynamics_QM9(nn.Module):
             elif self.context_node_nf > 0: # TODO eval
                 context = context.view(bs*n_nodes, self.context_node_nf)
                 assert self.context_node_nf == 1, f"context_node_nf should be 1, but got {self.context_node_nf}"
-                assert bs*n_nodes == 2900, f"bs*nodes should be 2900, but got {bs*n_nodes}"
+                # assert bs*n_nodes == 2900, f"bs*nodes should be 2900, but got {bs*n_nodes}"
                 h = torch.cat([h, context], dim=1)
+                # print("h: ", h.shape, h[-1], flush=True)
 
             else:
                 print(f"ERROR: cannot embed context {context.shape} in {self.mode} mode")
@@ -618,11 +619,11 @@ class EGNN_dynamics_QM9(nn.Module):
             if self.decoupling:
                 _, _, org_h = self.egnn2(h, x, edges, node_mask=node_mask, edge_mask=edge_mask)
                 
-            for id in range(x_final.shape[0]):
-                if torch.any(torch.isnan((x_final*node_mask)[id])):
-                    print("id: ", id)
-                    print("x_final: ", x_final[id])
-                    print("x: ", x[id])
+            # for id in range(x_final.shape[0]):
+                # if torch.any(torch.isnan((x_final*node_mask)[id])):
+                    # print("id: ", id)
+                    # print("x_final: ", x_final[id])
+                    # print("x: ", x[id])
             vel = (x_final - x) * node_mask  # This masking operation is redundant but just in case
             if self.uni_diffusion:
                 # construct batch for scatter
@@ -775,11 +776,11 @@ class EGNN_dynamics_QM9(nn.Module):
         vel = vel.view(bs, n_nodes, -1)
 
         if torch.any(torch.isnan(vel)):
-            for id in range(bs):
-                if torch.any(torch.isnan(vel[id])):
-                    print("id: ", id)
-                    print("vel: ", vel[id])
-                    break
+            # for id in range(bs):
+            #     if torch.any(torch.isnan(vel[id])):
+            #         print("id: ", id)
+            #         print("vel: ", vel[id])
+            #         break
             print('Warning: detected nan, resetting EGNN output to zero.')
             vel = torch.zeros_like(vel)
 
