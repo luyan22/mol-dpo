@@ -153,7 +153,10 @@ class DPO(torch.nn.Module):
         if wandb is not None:
             wandb.log({"prop_loss": prop_loss})
 
-        self.model_finetune.dpo_finetune_step(z=xh, ref_zt_chain=ref_zt_chain, ref_eps_t_chain=ref_eps_t_chain, mu_chain=mu_chain, n_samples=n_samples, gamma=gamma, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=fix_noise, conditional_sampling=conditional_sampling, max_n_nodes=self.max_n_nodes, optim=self.optim, wandb=wandb, stability_mask=stability_mask, lr_dict=self.lr_dict(mu_prop_loss_chain), training_scheduler=self.training_scheduler)
+        loss_all = self.model_finetune.dpo_finetune_step(z=xh, ref_zt_chain=ref_zt_chain, ref_eps_t_chain=ref_eps_t_chain, mu_chain=mu_chain, n_samples=n_samples, gamma=gamma, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=fix_noise, conditional_sampling=conditional_sampling, max_n_nodes=self.max_n_nodes, optim=self.optim, wandb=wandb, stability_mask=stability_mask, lr_dict=self.lr_dict(mu_prop_loss_chain), training_scheduler=self.training_scheduler)
+
+        if wandb is not None:
+            wandb.log({"loss_all": loss_all})
 
         sample_chain = {"x": x, "h": h, "zt_chain": ref_zt_chain, "eps_t_chain": ref_eps_t_chain, "mu_chain":mu_chain, "mu_prop_loss_chain": mu_prop_loss_chain, "node_mask": node_mask, "edge_mask": edge_mask, "context": context, "gamma": gamma}
         return sample_chain
@@ -195,7 +198,7 @@ class DPO(torch.nn.Module):
         # context.shape = (n_samples, max_nodes, 1)
         return context
 
-    def lr_dict(self, mu_prop_loss_chain=None):
+    def lr_dict(self, mu_prop_loss_chain=None, loss_hist=None):
         '''
         TODO
         construct a dictionary of learning rate for each time step
@@ -203,14 +206,27 @@ class DPO(torch.nn.Module):
         '''
         lr_dict = {}
         if self.lr_scheduler == "importance_sampling":
-            sum_prop_loss = sum(mu_prop_loss_chain)
-            for t_int in range(self.T):
-                lr_dict[t_int] = self.lr * (mu_prop_loss_chain[t_int] / sum_prop_loss)
-            pass
+            if loss_hist is None:
+                print("No loss history provided, use constant lr")
+                for t_int in range(self.T):
+                    lr_dict[t_int/self.T] = self.lr
+            else:
+                sum_loss = sum(loss_hist)
+                for t_int in range(self.T):
+                    t = float(t_int) / self.T
+                    lr_dict[t] = self.lr * (loss_hist[t_int] / sum_loss)
         elif self.lr_scheduler == "linear_decay": 
             for t_int in range(self.T):
                 t = float(t_int) / self.T
                 lr_dict[t] = self.lr * t
+        elif self.lr_scheduler == "constant":
+            for t_int in range(self.T):
+                lr_dict[t_int/self.T] = self.lr
+        elif self.lr_scheduler == "mu_sampling":
+            sum_prop_loss = sum(mu_prop_loss_chain)
+            for t_int in range(self.T):
+                lr_dict[t_int/self.T] = self.lr * (mu_prop_loss_chain[t_int] / sum_prop_loss)
+            pass
         else:
             assert False, f"lr_scheduler {self.lr_scheduler} not supported"
         return lr_dict
@@ -251,14 +267,14 @@ class DPO(torch.nn.Module):
             torch.cuda.empty_cache()
             if eval_interval > 0 and epoch % eval_interval == 0:
                 eval_start_time = time.time()
-                self.eval(n_samples=n_samples, stability_eval=True, fix_noise=False, conditional_sampling=False, wandb=wandb)
+                self.eval(n_samples=n_samples, stability_eval=True, fix_noise=False, conditional_sampling=False, wandb=wandb, ref_finetune_dist=True)
                 eval_end_time = time.time()
                 print("Epoch evaluation time: ", eval_end_time - eval_start_time)
                 if wandb is not None:
                     wandb.log({"Epoch_evaluation_time": eval_end_time - eval_start_time})
         pass
 
-    def eval(self, n_samples, stability_eval=True, fix_noise=False, conditional_sampling=False, wandb=None): # TODO
+    def eval(self, n_samples, stability_eval=True, fix_noise=False, conditional_sampling=False, wandb=None, ref_finetune_dist=False): # TODO
         print(f"Evaluating model on {n_samples} samples")
         nodesxsample, node_mask, edge_mask = self.prepare_masks(n_samples)
         context = self.prepare_pseudo_context(n_samples, nodesxsample, node_mask) # different only in the dimensionality of the context
@@ -295,4 +311,22 @@ class DPO(torch.nn.Module):
             if wandb is not None:
                 wandb.log({"eval_mol_stable": sum(mol_stable_lst) / len(mol_stable_lst)})
                 wandb.log({"eval_prop_loss": prop_loss})
+        
+        if ref_finetune_dist:
+            dist = self.ref_finetune_dist()
+            print("ref_finetune_dist: ", dist)
+            if wandb is not None:
+                wandb.log({"ref_finetune_dist": dist})
         pass
+
+    def ref_finetune_dist(self):
+        # calculate the difference in parameters between the reference model and the finetuned model
+        # dist = \sum {|ref_param - finetuned_param| / |ref_param|}
+        ref_params = list(self.model_ref.parameters())
+        finetuned_params = list(self.model_finetune.parameters())
+        assert len(ref_params) == len(finetuned_params), f"ref_params: {len(ref_params)}, finetuned_params: {len(finetuned_params)}"
+        diff_params = []
+        for i in range(len(ref_params)):
+            diff_params.append(torch.mean(torch.abs(ref_params[i] - finetuned_params[i]) / torch.abs(ref_params[i])))
+        dist = sum(diff_params) / len(diff_params)
+        return dist

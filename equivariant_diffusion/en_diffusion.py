@@ -1604,7 +1604,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         return zt
         
 
-    def sample_p_zs_given_zt(self, s, t, zt, node_mask, edge_mask, context, fix_noise=False, yt=None, ys=None, force_t_zero=False, force_t2_zero=False, pseudo_context=None, mean=None, mad=None,conditional_sampling=False, no_noise_xh=None,
+    def sample_p_zs_given_zt(self, s, t, zt, node_mask, edge_mask, context, fix_noise=False, yt=None, ys=None, force_t_zero=False, force_t2_zero=False, pseudo_context=None, mean=None, mad=None, conditional_sampling=False, no_noise_xh=None,
     zt_chain=None, eps_t_chain=None, mu_chain=None):
         """Samples from zs ~ p(zs | zt). Only used during sampling."""
         gamma_s = self.gamma(s)
@@ -2026,6 +2026,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                 for param_group in optim.param_groups:
                     print("lr: ", param_group['lr'])
                     param_group['lr'] = lr_dict[s/self.T]
+                    # param_group['lr'] = 0
             optim.step()
             optim.zero_grad()
             if wandb is not None:

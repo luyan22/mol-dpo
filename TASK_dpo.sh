@@ -51,9 +51,21 @@ export CUDA_VISIBLE_DEVICES=2
 export LD_LIBRARY_PATH=/home/admin01/SKData/miniconda3/envs/MOLuni/lib
 python -m DPO.main_dpo --ref_fold outputs/edm_cond_alpha --ref_model_path outputs/edm_cond_alpha/generative_model_ema_2990.npy --model_type edm --finetune_fold DPO/finetune/alpha --eval_interval 1 --exp_name DPO_alpha_train --reward_network_type egnn --reward_model_path "qm9/property_prediction/outputs/exp_class_alpha/best_checkpoint.npy" --reward_fold "qm9/property_prediction/outputs/exp_class_alpha"  --beta 0.1 --lr 0.00001 --debug_mode 1 --n_samples 100 --training_scheduler decrease_t --lr_scheduler linear_decay > logs/dpo_train/alpha/minus_0.1_1e-5_egnn.log 2>&1 &
 
-export CUDA_VISIBLE_DEVICES=7 # doing on tmux dpo_alpha
+export CUDA_VISIBLE_DEVICES=7 # minus 0.1
 export LD_LIBRARY_PATH=/home/admin01/SKData/miniconda3/envs/MOLuni/lib
-python -m DPO.main_dpo --ref_fold outputs/edm_cond_alpha --ref_model_path outputs/edm_cond_alpha/generative_model_ema_2990.npy --model_type edm --finetune_fold DPO/finetune/alpha --eval_interval 1 --exp_name DPO_alpha_train --reward_network_type egnn --reward_model_path "qm9/property_prediction/outputs/exp_class_alpha/best_checkpoint.npy" --reward_fold "qm9/property_prediction/outputs/exp_class_alpha"  --beta 0.1 --lr 0.00001 --debug_mode 0 --n_samples 100 --lr_scheduler importance_sampling > logs/dpo_train/alpha/minus_0.1_1e-5_egnn.log 2>&1 &
+python -m DPO.main_dpo --ref_fold outputs/edm_cond_alpha --ref_model_path outputs/edm_cond_alpha/generative_model_ema_2990.npy --model_type edm --finetune_fold DPO/finetune/alpha --eval_interval 1 --exp_name DPO_alpha_train --reward_network_type egnn --reward_model_path "qm9/property_prediction/outputs/exp_class_alpha/best_checkpoint.npy" --reward_fold "qm9/property_prediction/outputs/exp_class_alpha" --reward_func minus  --beta 0.1 --lr 0.00001 --debug_mode 0 --n_samples 100 --lr_scheduler importance_sampling > logs/dpo_train/alpha/minus_0.1_1e-5_egnn.log 2>&1 &
+
+export CUDA_VISIBLE_DEVICES=7 # exp 1
+export LD_LIBRARY_PATH=/home/admin01/SKData/miniconda3/envs/MOLuni/lib
+python -m DPO.main_dpo --ref_fold outputs/edm_cond_alpha --ref_model_path outputs/edm_cond_alpha/generative_model_ema_2990.npy --model_type edm --finetune_fold DPO/finetune/alpha --eval_interval 1 --exp_name DPO_alpha_train --reward_network_type egnn --reward_model_path "qm9/property_prediction/outputs/exp_class_alpha/best_checkpoint.npy" --reward_fold "qm9/property_prediction/outputs/exp_class_alpha" --reward_func exp  --beta 1 --lr 0.00001 --debug_mode 0 --n_samples 100 --training_scheduler random --lr_scheduler importance_sampling > logs/dpo_train/alpha/exp_1_1e-5_egnn.log 2>&1 &
+
+export CUDA_VISIBLE_DEVICES=7 # exp 0.1
+export LD_LIBRARY_PATH=/home/admin01/SKData/miniconda3/envs/MOLuni/lib
+python -m DPO.main_dpo --ref_fold outputs/edm_cond_alpha --ref_model_path outputs/edm_cond_alpha/generative_model_ema_2990.npy --model_type edm --finetune_fold DPO/finetune/alpha --eval_interval 1 --exp_name DPO_alpha_train --reward_network_type egnn --reward_model_path "qm9/property_prediction/outputs/exp_class_alpha/best_checkpoint.npy" --reward_fold "qm9/property_prediction/outputs/exp_class_alpha" --reward_func exp  --beta 0.1 --lr 0.00001 --debug_mode 0 --n_samples 100 --lr_scheduler importance_sampling > logs/dpo_train/alpha/minus_0.1_1e-5_egnn.log 2>&1 &
+
+export CUDA_VISIBLE_DEVICES=7 # exp 0.1
+export LD_LIBRARY_PATH=/home/admin01/SKData/miniconda3/envs/MOLuni/lib
+python -m DPO.main_dpo --ref_fold outputs/edm_cond_alpha --ref_model_path outputs/edm_cond_alpha/generative_model_ema_2990.npy --model_type edm --finetune_fold DPO/finetune/alpha --eval_interval 1 --exp_name DPO_alpha_train --reward_network_type egnn --reward_model_path "qm9/property_prediction/outputs/exp_class_alpha/best_checkpoint.npy" --reward_fold "qm9/property_prediction/outputs/exp_class_alpha" --reward_func exp  --beta 0.1 --lr 0.00001 --debug_mode 0 --n_samples 100 --lr_scheduler importance_sampling > logs/dpo_train/alpha/minus_0.1_1e-5_egnn.log 2>&1 &
 
 
 
