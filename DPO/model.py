@@ -292,8 +292,8 @@ class DPO(torch.nn.Module):
                 utils.save_model(self.model_finetune, '%s/generative_model_%d.npy' % (dir, epoch))
                 if self.ema_decay > 0:
                     utils.save_model(self.model_ema, '%s/generative_model_ema_%d.npy' % (dir, epoch))
-                with open('%s/args_%d.pickle' % (dir, epoch), 'wb') as f:
-                    pickle.dump(self.args, f)
+                with open('%s/args.pickle' % (dir), 'wb') as f:
+                    pickle.dump(self.ref_args, f)
                 pass
         pass
 
