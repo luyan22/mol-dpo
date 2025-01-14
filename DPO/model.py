@@ -9,14 +9,23 @@ from qm9.property_prediction import prop_utils
 import random
 import utils
 import pickle, os
+from equivariant_diffusion import utils as flow_utils
 class DPO(torch.nn.Module):
     def __init__(self, ref_args, args, exp_name, model_ref:EnVariationalDiffusion, model_reward:EnVariationalDiffusion, beta, lr, optim, num_epochs, nodes_dist, dataset_info, device, dataloaders, prop_dist:DistributionProperty, ref_model_type, reward_func, reward_network_type, lr_scheduler, save_model):
         super(DPO, self).__init__()
+
+        # prepare finetune and ref models
         self.model_ref = copy.deepcopy(model_ref)
         self.model_ref.to(device)
         self.exp_name = exp_name
         self.model_finetune = model_ref  
         self.model_finetune.to(device)
+
+        # prepare ema model
+        self.model_ema = copy.deepcopy(model_ref)
+        self.ema_decay = args.ema_decay
+        self.ema:flow_utils.EMA = flow_utils.EMA(args.ema_decay)
+
         self.T = self.model_ref.T
         self.model_reward = model_reward
         self.beta = beta
@@ -259,6 +268,9 @@ class DPO(torch.nn.Module):
 
             self.train_step(n_samples=n_samples, n_nodes=nodesxsample, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=False, conditional_sampling=False, wandb=wandb) 
 
+            if self.ema_decay > 0:
+                self.ema.update_model_average(self.model_ema, self.model_finetune)
+
             epoch_end_time = time.time()
             print("Epoch training time: ", epoch_end_time - epoch_start_time)
             if wandb is not None:
@@ -278,6 +290,8 @@ class DPO(torch.nn.Module):
                     os.makedirs(dir)
                 utils.save_model(self.optim, f'{dir}/optim_{epoch}.npy')
                 utils.save_model(self.model_finetune, '%s/generative_model_%d.npy' % (dir, epoch))
+                if self.ema_decay > 0:
+                    utils.save_model(self.model_ema, '%s/generative_model_ema_%d.npy' % (dir, epoch))
                 with open('%s/args_%d.pickle' % (dir, epoch), 'wb') as f:
                     pickle.dump(self.args, f)
                 pass
@@ -287,16 +301,15 @@ class DPO(torch.nn.Module):
         print(f"Evaluating model on {n_samples} samples")
         nodesxsample, node_mask, edge_mask = self.prepare_masks(n_samples)
         context = self.prepare_pseudo_context(n_samples, nodesxsample, node_mask) # different only in the dimensionality of the context
-        self.model_finetune.sample_chain(n_samples=n_samples, n_nodes=self.max_n_nodes, node_mask=node_mask, edge_mask=edge_mask, context=context)
+        # self.model_finetune.sample_chain(n_samples=n_samples, n_nodes=self.max_n_nodes, node_mask=node_mask, edge_mask=edge_mask, context=context)
         if self.model_finetune.property_pred: # x, h, pred are not used
             assert False, "DGAP conditional generation not supported"
             _, _, _, zt_chain, eps_t_chain = self.model_finetune.sample_dpo_chain(max_n_nodes=self.max_n_nodes, n_samples=n_samples, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=fix_noise, conditional_sampling=conditional_sampling)
         else:
-            x, h, zt_chain, eps_t_chain = self.model_finetune.sample_dpo_chain(max_n_nodes=self.max_n_nodes, n_samples=n_samples, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=fix_noise, conditional_sampling=conditional_sampling)
-            # _, _, zt_chain, eps_t_chain = self.model_ref.sample_dpo_chain(max_n_nodes=self.max_n_nodes, n_samples=n_samples, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=fix_noise, conditional_sampling=conditional_sampling)
+            x, h, _, _ = self.model_finetune.sample_dpo_chain(max_n_nodes=self.max_n_nodes, n_samples=n_samples, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=fix_noise, conditional_sampling=conditional_sampling)
+            if self.ema_decay > 0:
+                x_ema, h_ema, _, _ = self.model_ema.sample_dpo_chain(max_n_nodes=self.max_n_nodes, n_samples=n_samples, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=fix_noise, conditional_sampling=conditional_sampling)
         
-        zt_chain = [z.detach() for z in zt_chain]
-        eps_t_chain = [eps.detach() for eps in eps_t_chain]
 
         xh = torch.cat([x, h["categorical"]], dim=-1)
         if self.ref_args.include_charges:
@@ -309,7 +322,7 @@ class DPO(torch.nn.Module):
         gamma = gamma.detach()
         prop_loss = prop_loss.detach()
 
-        print("eval gamma: ", gamma)
+        # print("eval gamma: ", gamma)
         print("eval prop_loss: ", prop_loss)
         #TODO : add more eval metrics, such as mol-stable, novelty, etc.
         if stability_eval:
@@ -320,12 +333,32 @@ class DPO(torch.nn.Module):
             if wandb is not None:
                 wandb.log({"eval_mol_stable": sum(mol_stable_lst) / len(mol_stable_lst)})
                 wandb.log({"eval_prop_loss": prop_loss})
+            
+            if self.ema_decay > 0:
+                xh_ema = torch.cat([x_ema, h_ema["categorical"]], dim=-1)
+                if self.ref_args.include_charges:
+                    assert False, "Currently no charge"
+                    xh_ema = torch.cat([xh_ema, h_ema["int"]], dim=-1)
+                assert xh_ema.shape[0] == n_samples and xh_ema.shape[1] == self.max_n_nodes and xh_ema.shape[2] == 8, f"xh_ema shape {xh_ema.shape} should be ({n_samples}, {self.max_n_nodes}, 8)"
+                gamma_ema, prop_loss_ema = self.gamma_pred(z=xh_ema, context=context, node_mask=node_mask, edge_mask=edge_mask, max_nodes=self.max_n_nodes)
+                gamma_ema = gamma_ema.detach()
+                prop_loss_ema = prop_loss_ema.detach()
+                # print("eval gamma_ema: ", gamma_ema)
+                print("eval prop_loss_ema: ", prop_loss_ema)
+                z_final_ema = xh_ema
+                mol_stable_lst_ema = analyze_stability_for_genmol(one_hot=z_final_ema[:,:,3:8].detach(), x=z_final_ema[:,:,:3].detach(), node_mask=node_mask, dataset_info=self.dataset_info)
+                print("mol_stable_lst_ema: ", mol_stable_lst_ema)
+                print("mol stability ema: ", sum(mol_stable_lst_ema) / len(mol_stable_lst_ema))
+                if wandb is not None:
+                    wandb.log({"eval_mol_stable_ema": sum(mol_stable_lst_ema) / len(mol_stable_lst_ema)})
+                    wandb.log({"eval_prop_loss_ema": prop_loss})
         
         if ref_finetune_dist:
-            dist = self.ref_finetune_dist()
-            print("ref_finetune_dist: ", dist)
+            dist, ema_dist = self.ref_finetune_dist()
             if wandb is not None:
                 wandb.log({"ref_finetune_dist": dist})
+                if ema_dist is not None:
+                    wandb.log({"ref_finetune_dist_ema": ema_dist})
         pass
 
     def ref_finetune_dist(self):
@@ -338,4 +371,11 @@ class DPO(torch.nn.Module):
         for i in range(len(ref_params)):
             diff_params.append(torch.mean(torch.abs(ref_params[i] - finetuned_params[i]) / torch.abs(ref_params[i])))
         dist = sum(diff_params) / len(diff_params)
-        return dist
+
+        if self.ema_decay > 0:
+            ema_params = list(self.model_ema.parameters())
+            diff_params_ema = []
+            for i in range(len(ref_params)):
+                diff_params_ema.append(torch.mean(torch.abs(ref_params[i] - ema_params[i]) / torch.abs(ref_params[i])))
+            dist_ema = sum(diff_params_ema) / len(diff_params_ema)
+        return dist, dist_ema if self.ema_decay > 0 else None

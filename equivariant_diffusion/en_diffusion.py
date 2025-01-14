@@ -2072,8 +2072,8 @@ class EnVariationalDiffusion(torch.nn.Module):
                     # param_group['lr'] = 0
             optim.step()
             optim.zero_grad()
-            if wandb is not None:
-                wandb.log({f"loss": loss_t.item()})
+            # if wandb is not None:
+            #     wandb.log({f"loss": loss_t.item()})
         return loss_all, loss_hist
 
     @torch.no_grad()

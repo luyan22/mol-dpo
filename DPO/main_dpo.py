@@ -40,7 +40,8 @@ def get_parser():
     parser.add_argument("--beta", type=float, default=0.01, help="Beta for the DPO loss.")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate for the finetuning.")
     parser.add_argument("--lr_scheduler", type=str, default="importance_sampling", choices=["importance_sampling", "linear_decay", "constant"], help="Learning rate scheduler for the finetuning.")
-    
+    parser.add_argument("--ema_decay", type=float, default=0.999, help="Exponential moving average decay for the model.")
+
     parser.add_argument("--num_epochs", type=int, default=1000, help="Number of epochs to finetune the model.")
     parser.add_argument("--n_samples", type=int, default=4, help="Number of samples to use for training the DPO model.")
 
