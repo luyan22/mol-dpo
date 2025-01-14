@@ -253,26 +253,12 @@ class EGNN(nn.Module):
         distances, _ = coord2diff(x, edge_index)
         if self.sin_embedding is not None:
             distances = self.sin_embedding(distances)
-        # print("x: ", x.shape)
-        # print("h: ", h.shape, h[0])
-        # print("self.embedding: ", self.embedding.weight.shape)
         h = self.embedding(h)
         if context_basis is not None:
             h = torch.cat([h, context_basis], dim=1)
         
-        # allocated_memory = torch.cuda.memory_allocated(device)
-        # print(f"已分配显存 begin: {allocated_memory / 1024**2:.2f} MB")
-        # print("num_layers: ", self.n_layers)
-        # print("branch_layers_num: ", self.branch_layers_num)
-        # print("all_main_branch: ", all_main_branch)
-        # print("all_second_branch: ", all_second_branch)
         for i in range(0, self.n_layers):
-            # print("layer need grad: ", self._modules["e_block_%d" % i].parameters().__next__().requires_grad)
             h, x = self._modules["e_block_%d" % i](h, x, edge_index, node_mask=node_mask, edge_mask=edge_mask, edge_attr=distances)
-            # allocated_memory = torch.cuda.memory_allocated(device)
-            # print(f"已分配显存 1: {allocated_memory / 1024**2:.2f} MB")
-            # print("shape of h: ", h.shape)
-            # print("shape of x: ", x.shape)
             # split branch
             if self.branch_layers_num > 0 and i == self.n_layers - self.branch_layers_num - 1 and not all_main_branch:
                 if all_second_branch: # all the second branch, but the first branch is also forwarded, may be optimized further
@@ -281,8 +267,6 @@ class EGNN(nn.Module):
                     edge_mask1 = edge_mask
                     node_mask1 = node_mask
                     distances1 = distances
-                    # allocated_memory = torch.cuda.memory_allocated(device)
-                    # print(f"已分配显存 2: {allocated_memory / 1024**2:.2f} MB")
                 else:
                     half_batch_num = h.shape[0] // 2
                     h1 = h[half_batch_num:]
@@ -297,8 +281,6 @@ class EGNN(nn.Module):
                     distances1 = distances[half_batch_edge_num:]
                     distances = distances[:half_batch_edge_num]
                     edge_index = get_adj_matrix(n_nodes, batch_size // 2, self.device) # half edge_index
-                    # allocated_memory = torch.cuda.memory_allocated(device)
-                    # print(f"已分配显存 3: {allocated_memory / 1024**2:.2f} MB")
                 
                 
                 

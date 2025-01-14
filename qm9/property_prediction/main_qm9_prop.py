@@ -48,7 +48,7 @@ def train(model, epoch, loader, mean, mad, property, device, partition='train', 
         if property_pred:
             label = data[target_property].to(device, torch.float32)
         else:
-            print("data[property]: ", data[property])
+            # print("data[property]: ", data[property])
             label = data[property].to(device, torch.float32)
 
         '''
