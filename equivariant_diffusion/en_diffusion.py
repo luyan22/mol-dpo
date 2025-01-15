@@ -2077,6 +2077,14 @@ class EnVariationalDiffusion(torch.nn.Module):
             #     wandb.log({f"loss": loss_t.item()})
 
         if gradients_aggregation == 1:
+            for name, param in self.named_parameters():
+                assert param.requires_grad == True, f"param {param} should require grad"
+                # print(name, param.grad.mean().item() if param.grad is not None else "None", flush=True)
+                if param.grad is not None:
+                    # report the parameter name if the gradient is out of (-1, 1)
+                    if param.grad.abs().max() > 1:
+                        print(f"{name} gradient is out of (-1, 1): {param.grad.abs().max()}")
+                    param.grad.data.clamp_(-1, 1)
             print("gradient aggregation")
             optim.step()
             optim.zero_grad()

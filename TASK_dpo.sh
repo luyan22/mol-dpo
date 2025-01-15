@@ -64,7 +64,7 @@ python -m DPO.main_dpo --ref_fold outputs/edm_cond_alpha --ref_model_path output
 export CUDA_VISIBLE_DEVICES=5 # exp 1
 export LD_LIBRARY_PATH=/home/admin01/SKData/miniconda3/envs/MOLuni/lib
 export LD_LIBRARY_PATH=/home/admin01/miniconda3/envs/UniMOL/lib # on 10.10.10.9
-python -m DPO.main_dpo --ref_fold outputs/edm_cond_alpha --ref_model_path outputs/edm_cond_alpha/generative_model_ema_2990.npy --model_type edm --finetune_fold DPO/finetune/alpha --eval_interval 1 --exp_name DPO_alpha_aggr --reward_network_type egnn --reward_model_path "qm9/property_prediction/outputs/exp_class_alpha/best_checkpoint.npy" --reward_fold "qm9/property_prediction/outputs/exp_class_alpha" --reward_func exp  --beta 1 --lr 0.00001 --debug_mode 0 --n_samples 100 --training_scheduler increase_t --lr_scheduler constant --save_model 1 --gradients_aggregation 1 > logs/dpo_train/alpha/exp_1_1e-5_egnn_aggr.log 2>&1 &
+python -m DPO.main_dpo --ref_fold outputs/edm_cond_alpha --ref_model_path outputs/edm_cond_alpha/generative_model_ema_2990.npy --model_type edm --finetune_fold DPO/finetune/alpha --eval_interval 1 --exp_name DPO_alpha_aggr --reward_network_type egnn --reward_model_path "qm9/property_prediction/outputs/exp_class_alpha/best_checkpoint.npy" --reward_fold "qm9/property_prediction/outputs/exp_class_alpha" --reward_func exp  --beta 1 --lr 0.000001 --debug_mode 0 --n_samples 100 --training_scheduler increase_t --lr_scheduler constant --save_model 1 --gradients_aggregation 1 > logs/dpo_train/alpha/exp_1_1e-5_egnn_aggr.log 2>&1 &
 
 
 
