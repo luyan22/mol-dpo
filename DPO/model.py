@@ -10,6 +10,8 @@ import random
 import utils
 import pickle, os
 from equivariant_diffusion import utils as flow_utils
+from equivariant_diffusion.utils import assert_mean_zero_with_mask, remove_mean_with_mask,\
+    assert_correctly_masked
 class DPO(torch.nn.Module):
     def __init__(self, ref_args, args, exp_name, model_ref:EnVariationalDiffusion, model_reward:EnVariationalDiffusion, beta, lr, optim, num_epochs, nodes_dist, dataset_info, device, dataloaders, prop_dist:DistributionProperty, ref_model_type, reward_func, reward_network_type, lr_scheduler, save_model):
         super(DPO, self).__init__()
@@ -69,13 +71,30 @@ class DPO(torch.nn.Module):
         for param in self.model_reward.parameters():
             param.requires_grad = False
 
+    def assert_one_hot(self, nodes, node_mask, max_nodes):
+        n_samples = int(nodes.shape[0] / max_nodes)
+        assert nodes.shape[0] % max_nodes == 0, f"nodes.shape[0] should be a multiple of max_nodes, but got {nodes.shape[0]} % {max_nodes}"
+        assert len(nodes.shape) == 2 and nodes.shape[1] == 5, f"nodes shape {nodes.shape} should be (n_samples * max_nodes, 5)"
+        # nodes.shape = (n_samples * max_nodes, 5)
+        # node_mask.shape = (n_samples, max_nodes, 1)
+        for sample_index in range(n_samples):
+            for node_index in range(max_nodes):
+                atom_index = sample_index * max_nodes + node_index
+                if node_mask[sample_index][node_index] == 0:
+                    continue
+                assert torch.sum(torch.abs(nodes[atom_index])) == 1, f"nodes[{atom_index}] should be one-hot encoded"
+                assert torch.max(nodes[atom_index]) == 1, f"nodes[{atom_index}] should be one-hot encoded"
+
     def gamma_pred(self, z, context, node_mask, edge_mask, max_nodes):
         nodes = z[:, :, 3:8]     
+        # print("context: ", context)
         batch_size = nodes.shape[0]
         context = context.squeeze(dim=2).squeeze(dim=1)
         context = context.view(batch_size, -1)
-        context = context.mean(dim=1)
+        context = context[:, 0]
+        # print("context: ", context)
         if self.reward_network_type == "uni_gem":
+            assert False, "Currently use edm, not supported"
             gamma, prop_loss = self.model_reward.dpo_reward(z=z, context=context, node_mask=node_mask, edge_mask=edge_mask, dpo_beta=self.beta, mean=self.mean, mad=self.mad, reward_func=self.reward_func)
         elif self.reward_network_type == "egnn":
             n_samples = batch_size
@@ -83,6 +102,8 @@ class DPO(torch.nn.Module):
             mean = self.mean
             # print("n_nodes:", max_nodes)
             nodes = nodes.view(batch_size * max_nodes, -1)
+            self.assert_one_hot(nodes, node_mask, max_nodes)
+
             atom_positions = z[:, :, 0:3].view(batch_size * max_nodes, -1)
             device = nodes.device
             node_mask = node_mask.view(batch_size * max_nodes, -1)
@@ -100,7 +121,9 @@ class DPO(torch.nn.Module):
             assert context.shape == pred.shape, f"context shape {context.shape} should be equal to pred shape {pred.shape}"
             loss = loss_fn(pred, context)
             loss_reparam = loss_fn(pred * mad + mean, context * mad + mean)
-            
+            # print("pred: ", pred * mad + mean)
+            # print("context: ", context * mad + mean)
+    
      
             if reward_func == "minus":
                 gamma = torch.exp((1 / dpo_beta) * (-loss))
@@ -119,19 +142,6 @@ class DPO(torch.nn.Module):
         else:
             assert False, f"reward_network_type {self.reward_network_type} not supported"
         return gamma, prop_loss
-
-    def mu_chain_reward_calc(self, mu_chain, n_samples, max_n_nodes, node_mask, edge_mask, context, wandb=None):
-        mu_prop_loss = []
-        for t, mu in enumerate(mu_chain):
-            assert len(mu.shape) == 3 and mu.shape[0] == n_samples and mu.shape[1] == self.max_n_nodes and mu.shape[2] == 8, f"mu shape {mu.shape} should be ({n_samples}, {self.max_n_nodes}, 8)"
-            gamma, prop_loss = self.gamma_pred(z=mu, context=context, node_mask=node_mask, edge_mask=edge_mask, max_nodes=self.max_n_nodes)
-            gamma = gamma.detach()
-            prop_loss = prop_loss.detach()
-            # print("t: ", t, "prop_loss: ", prop_loss)
-            mu_prop_loss.append(prop_loss)
-            if wandb is not None:
-                wandb.log({"prop_loss_t": prop_loss})
-        return mu_prop_loss
     
     def train_step(self, n_samples, n_nodes, node_mask, edge_mask, context, fix_noise=False, conditional_sampling=False, wandb=None, sample_chain=None):
         # TODO
@@ -143,12 +153,19 @@ class DPO(torch.nn.Module):
             loss_hist = None
             if sample_chain is None:
                 print("Sampling new chain")
+                # print("context: ", context.mean())
                 x, h, ref_zt_chain, ref_eps_t_chain = self.model_ref.sample_dpo_chain(max_n_nodes=self.max_n_nodes, n_samples=n_samples, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=fix_noise, conditional_sampling=conditional_sampling)
             else:
                 x, h, ref_zt_chain, ref_eps_t_chain = sample_chain["x"], sample_chain["h"], sample_chain["zt_chain"], sample_chain["eps_t_chain"]
                 loss_hist = sample_chain["loss_hist"]
         ref_zt_chain = [z.detach() for z in ref_zt_chain]
         ref_eps_t_chain = [eps.detach() for eps in ref_eps_t_chain]
+
+        assert_correctly_masked(x, node_mask)
+        assert_mean_zero_with_mask(x, node_mask)
+
+        one_hot = h['categorical']
+        assert_correctly_masked(one_hot.float(), node_mask)
 
         # normalize x, h
         x_norm, h_norm, _ = self.model_ref.normalize(x, h, node_mask)
@@ -211,6 +228,7 @@ class DPO(torch.nn.Module):
         pseudo_context = self.prop_dist.sample_batch(nodesxsample).to(self.device)
         # pseudo_context = pseudo_context * self.prop_dist.normalizer[self.target_property]['mad'] + self.prop_dist.normalizer[self.target_property]['mean']
         assert self.mean == self.prop_dist.normalizer[self.target_property]['mean'], f"mean of target property is different from the mean of the dataset, self.mean: {self.mean} vs  prop_dist.normalizer[self.args.target_property]['mean']: {self.prop_dist.normalizer[self.target_property]['mean']}"
+        assert self.mad == self.prop_dist.normalizer[self.target_property]['mad'], f"mad of target property is different from the mad of the dataset, self.mad: {self.mad} vs  prop_dist.normalizer[self.args.target_property]['mad']: {self.prop_dist.normalizer[self.target_property]['mad']}"
 
         # pseudo_context = pseudo_context * self.mad + self.mean
 
@@ -264,7 +282,6 @@ class DPO(torch.nn.Module):
             assert node_mask.shape == ( n_samples, self.max_n_nodes, 1), f"node_mask.shape: {node_mask.shape}"
 
             context = self.prepare_pseudo_context(n_samples, nodesxsample, node_mask) # different only in the dimensionality of the context
-
 
             self.train_step(n_samples=n_samples, n_nodes=nodesxsample, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=False, conditional_sampling=False, wandb=wandb) 
 
@@ -351,10 +368,11 @@ class DPO(torch.nn.Module):
                 print("mol stability ema: ", sum(mol_stable_lst_ema) / len(mol_stable_lst_ema))
                 if wandb is not None:
                     wandb.log({"eval_mol_stable_ema": sum(mol_stable_lst_ema) / len(mol_stable_lst_ema)})
-                    wandb.log({"eval_prop_loss_ema": prop_loss})
+                    wandb.log({"eval_prop_loss_ema": prop_loss_ema})
         
         if ref_finetune_dist:
             dist, ema_dist = self.ref_finetune_dist()
+            print("ref_finetune_dist: ", dist)
             if wandb is not None:
                 wandb.log({"ref_finetune_dist": dist})
                 if ema_dist is not None:

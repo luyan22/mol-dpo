@@ -1610,6 +1610,7 @@ class EnVariationalDiffusion(torch.nn.Module):
     zt_chain=None, eps_t_chain=None):
         """Samples from zs ~ p(zs | zt). Only used during sampling."""
         assert t.max() < 1 + 1e-3, f"t.max() is {t.max()}"
+        assert context == None or len(context.shape) == 3, f"context shape is {context.shape}"
         gamma_s = self.gamma(s)
         gamma_t = self.gamma(t)
 
@@ -1980,7 +1981,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         for s in s_range:
             if training_scheduler == "random":
                 s = random.randint(0, self.T-1)
-            print("finetune step: ", s, flush=True)
+            # print("finetune step: ", s, flush=True)
             t = s + 1
             zt = ref_zt_chain[t] # TODO check id of ref_zt_chain[t]
             s_array = torch.full((n_samples, 1), fill_value=s, device=zt.device)
@@ -2046,14 +2047,15 @@ class EnVariationalDiffusion(torch.nn.Module):
             assert len(loss_t.shape) == 1 and loss_t.shape[0] == n_samples, f"loss_t shape {loss_t.shape} should be ({n_samples})"
 
             stb_rate = stability_mask.sum() / stability_mask.shape[0]
-            # print("stb_rate: ", stb_rate)
+
             assert stability_mask.shape == loss_t.shape and stability_mask.shape[0] == n_samples, f"stability_mask shape {stability_mask.shape} should be equal to loss_t shape {loss_t.shape}"
-            loss_t = loss_t * stability_mask
-            loss_t = loss_t.mean() / stb_rate
+            # loss_t = loss_t * stability_mask
+            # loss_t = loss_t.mean() / stb_rate
+            loss_t = loss_t.mean()
             assert len(loss_t.shape) == 0, f"loss_t shape {loss_t.shape} should be ()"
             if gamma.mean() == 0:
                 print("gamma is 0, loss_t is: ")
-            print("loss_t: ", loss_t, flush=True)
+            # print("loss_t: ", loss_t, flush=True)
             # time.sleep(10)
             loss_all += loss_t.detach()
             loss_hist[s/self.T] = loss_t.detach().item()
@@ -2067,7 +2069,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             #         param.grad.data.clamp_(-1, 1)
             if lr_dict is not None:
                 for param_group in optim.param_groups:
-                    print("lr: ", param_group['lr'])
+                    # print("lr: ", param_group['lr'])
                     param_group['lr'] = lr_dict[s/self.T]
                     # param_group['lr'] = 0
             optim.step()
@@ -2181,16 +2183,13 @@ class EnVariationalDiffusion(torch.nn.Module):
         """
         Draw samples from the generative model.
         """
+        assert fix_noise == False, "fix noise should be False"
         if fix_noise:
             # Noise is broadcasted over the batch axis, useful for visualizations.
             z = self.sample_combined_position_feature_noise(1, n_nodes, node_mask)
         else:
             z = self.sample_combined_position_feature_noise(n_samples, n_nodes, node_mask)
-            # if self.condGenConfig is not None:
-                # print("Control pred loss under {}".format(self.condGenConfig["loss_maximum"]))
-                # print("node_mask: ", node_mask.sum().item())
-                # print("node_mask single: ", node_mask.sum(dim=1))
-                # z = self.sample_z_in_cond_gen(z, n_samples, n_nodes, node_mask, edge_mask, pseudo_context)
+            # print("zT: ", z.mean(), z.max(), z.min())
                 
 
 
@@ -2214,8 +2213,6 @@ class EnVariationalDiffusion(torch.nn.Module):
         # used for uni diffusion
         s_array2_org = torch.full((n_samples, 1), fill_value=-1, device=z.device)
         
-        zt_chain = []
-        eps_chain = []
         
         for s in reversed(range(0, self.T)):
             s_array = torch.full((n_samples, 1), fill_value=s, device=z.device)
@@ -2265,7 +2262,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                 z = self.sample_p_zs_given_zt_annel_lang(s_array, t_array, z, node_mask, edge_mask, context, fix_noise=fix_noise)
             elif self.dynamics.mode == "PAT" or self.atom_type_pred:
                 # z = self.sample_p_zs_given_zt(s_array, t_array, z[:,:,:3], node_mask, edge_mask, context, fix_noise=fix_noise, pseudo_context=pseudo_context, mean=mean, mad=mad)
-                z = self.sample_p_zs_given_zt(s_array, t_array, z[:,:,:3], node_mask, edge_mask, context, fix_noise=fix_noise, pseudo_context=pseudo_context, mean=mean, mad=mad, zt_chain=zt_chain, eps_t_chain=eps_chain)
+                z = self.sample_p_zs_given_zt(s_array, t_array, z[:,:,:3], node_mask, edge_mask, context, fix_noise=fix_noise, pseudo_context=pseudo_context, mean=mean, mad=mad)
             else:
                 z = self.sample_p_zs_given_zt(s_array, t_array, z, node_mask, edge_mask, context, fix_noise=fix_noise, conditional_sampling=conditional_sampling)
 
@@ -2277,7 +2274,6 @@ class EnVariationalDiffusion(torch.nn.Module):
             x, h, pred = self.sample_p_xh_given_z0(z, node_mask, edge_mask, context, fix_noise=fix_noise)
         else:
             if self.dynamics.mode == "PAT" or self.atom_type_pred:
-                # print("z size after padding 1", z.size())
                 z[:,:,self.n_dims:] = 1 # set the atom type to 1 for PAT
             x, h = self.sample_p_xh_given_z0(z, node_mask, edge_mask, context, fix_noise=fix_noise)
         

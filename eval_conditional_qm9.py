@@ -50,7 +50,7 @@ def get_generator(dir_path, dataloaders, device, args_gen, property_norms):
     model, nodes_dist, prop_dist = get_model(args_gen, device, dataset_info, dataloaders['train'], finetune=args_gen.finetune)
     fn = 'generative_model_ema.npy' if args_gen.ema_decay > 0 else 'generative_model.npy'
     # model_state_dict = torch.load(join(dir_path, fn), map_location='cpu')
-    if args.test_epoch > 0:
+    if args.test_epoch >= 0:
         load_model_path = join(dir_path, f'generative_model_ema_{args.test_epoch}.npy')
     else:
         load_model_path = join(dir_path, fn)
@@ -168,8 +168,7 @@ class DiffusionDataloader:
         elif self.args_gen.property_pred == 0:
             context = context * self.prop_dist.normalizer[prop_key]['mad'] + self.prop_dist.normalizer[prop_key]['mean']
         
-        if self.args_gen.property_pred:
-            
+        if self.args_gen.property_pred:      
             data = {
                 'positions': x.detach(),
                 'atom_mask': node_mask.detach(),
@@ -331,6 +330,8 @@ def main_qualitative(args):
 
 
 if __name__ == "__main__":
+    # torch.manual_seed(40)
+    # torch.cuda.manual_seed_all(40)
     parser = argparse.ArgumentParser()
     parser.add_argument('--exp_name', type=str, default='debug_alpha')
     parser.add_argument('--generators_path', type=str, default='outputs/exp_cond_alpha_pretrained')
@@ -361,7 +362,7 @@ if __name__ == "__main__":
     parser.add_argument("--property_pred", type=int, default=0,)
     parser.add_argument("--prediction_threshold_t", type=int, default=10,)
     
-    parser.add_argument("--test_epoch", type=int, default=0,)
+    parser.add_argument("--test_epoch", type=int, default=-1,)
 
     # check the stability of the generated samples
     parser.add_argument("--check_stability", type=int, default=0,)

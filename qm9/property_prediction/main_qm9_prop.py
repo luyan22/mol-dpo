@@ -51,30 +51,6 @@ def train(model, epoch, loader, mean, mad, property, device, partition='train', 
             # print("data[property]: ", data[property])
             label = data[property].to(device, torch.float32)
 
-        '''
-        print("Positions mean")
-        print(torch.mean(torch.abs(atom_positions)))
-        print("Positions max")
-        print(torch.max(atom_positions))
-        print("Positions min")
-        print(torch.min(atom_positions))
-
-
-        print("\nOne hot mean")
-        print(torch.mean(torch.abs(nodes)))
-        print("one_hot max")
-        print(torch.max(nodes))
-        print("one_hot min")
-        print(torch.min(nodes))
-
-
-        print("\nLabel mean")
-        print(torch.mean(torch.abs(label)))
-        print("label max")
-        print(torch.max(label))
-        print("label min")
-        print(torch.min(label))
-        '''
 
         if model_type == 'egnn':
             pred = model(h0=nodes, x=atom_positions, edges=edges, edge_attr=None, node_mask=atom_mask, edge_mask=edge_mask,

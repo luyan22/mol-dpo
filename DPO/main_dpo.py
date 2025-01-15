@@ -73,6 +73,8 @@ def print_device_info(device):
     print(f"可用显存: {free_memory / 1024**2:.2f} MB")
 
 def main():
+    # torch.manual_seed(40)
+    # torch.cuda.manual_seed_all(40)
     args = get_parser()
     print(f"Args: {args}")
     ref_args = get_args(args.ref_fold)
