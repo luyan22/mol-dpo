@@ -1955,7 +1955,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         # gamma = torch.zeros_like(gamma)
         return gamma, loss_reparam
     
-    def dpo_finetune_step(self, z, ref_zt_chain, ref_eps_t_chain, n_samples, gamma, node_mask, edge_mask, context, fix_noise, conditional_sampling, max_n_nodes, optim, wandb=None, stability_mask=None, lr_dict=None, training_scheduler="increase_t"):
+    def dpo_finetune_step(self, z, ref_zt_chain, ref_eps_t_chain, n_samples, gamma, node_mask, edge_mask, context, fix_noise, conditional_sampling, max_n_nodes, optim, wandb=None, stability_mask=None, lr_dict=None, training_scheduler="increase_t", gradients_aggregation=0):
         self.train()
         if wandb is not None:
             wandb.log({"γ_mean": gamma.mean()})
@@ -1977,6 +1977,7 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         s_range = range(0, self.T) if training_scheduler == "increase_t" else reversed(range(self.T))
         # z0 = ref_zt_chain[0]
+        optim.zero_grad()
 
         for s in s_range:
             if training_scheduler == "random":
@@ -2055,12 +2056,10 @@ class EnVariationalDiffusion(torch.nn.Module):
             assert len(loss_t.shape) == 0, f"loss_t shape {loss_t.shape} should be ()"
             if gamma.mean() == 0:
                 print("gamma is 0, loss_t is: ")
-            # print("loss_t: ", loss_t, flush=True)
-            # time.sleep(10)
+
             loss_all += loss_t.detach()
             loss_hist[s/self.T] = loss_t.detach().item()
-            # print("loss_t: ", loss_t)
-            optim.zero_grad()
+
             loss_t.backward()
             # for name, param in self.named_parameters():
             #     assert param.requires_grad == True, f"param {param} should require grad"
@@ -2069,13 +2068,18 @@ class EnVariationalDiffusion(torch.nn.Module):
             #         param.grad.data.clamp_(-1, 1)
             if lr_dict is not None:
                 for param_group in optim.param_groups:
-                    # print("lr: ", param_group['lr'])
                     param_group['lr'] = lr_dict[s/self.T]
                     # param_group['lr'] = 0
-            optim.step()
-            optim.zero_grad()
+            if gradients_aggregation == 0:
+                optim.step()
+                optim.zero_grad()
             # if wandb is not None:
             #     wandb.log({f"loss": loss_t.item()})
+
+        if gradients_aggregation == 1:
+            print("gradient aggregation")
+            optim.step()
+            optim.zero_grad()
         return loss_all, loss_hist
 
     @torch.no_grad()

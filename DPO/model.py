@@ -195,7 +195,7 @@ class DPO(torch.nn.Module):
             wandb.log({"prop_loss": prop_loss})
 
         # 3. finetune the model with the sampled results and the reference chain
-        loss_all, loss_hist = self.model_finetune.dpo_finetune_step(z=xh_norm, ref_zt_chain=ref_zt_chain, ref_eps_t_chain=ref_eps_t_chain, n_samples=n_samples, gamma=gamma, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=fix_noise, conditional_sampling=conditional_sampling, max_n_nodes=self.max_n_nodes, optim=self.optim, wandb=wandb, stability_mask=stability_mask, lr_dict=self.lr_dict(None, loss_hist=loss_hist), training_scheduler=self.training_scheduler)
+        loss_all, loss_hist = self.model_finetune.dpo_finetune_step(z=xh_norm, ref_zt_chain=ref_zt_chain, ref_eps_t_chain=ref_eps_t_chain, n_samples=n_samples, gamma=gamma, node_mask=node_mask, edge_mask=edge_mask, context=context, fix_noise=fix_noise, conditional_sampling=conditional_sampling, max_n_nodes=self.max_n_nodes, optim=self.optim, wandb=wandb, stability_mask=stability_mask, lr_dict=self.lr_dict(None, loss_hist=loss_hist), training_scheduler=self.training_scheduler, gradients_aggregation=self.args.gradients_aggregation)
 
         if wandb is not None:
             wandb.log({"loss_all": loss_all})
