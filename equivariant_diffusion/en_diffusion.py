@@ -2066,7 +2066,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             #     # print(name, param.grad.mean().item() if param.grad is not None else "None", flush=True)
             #     if param.grad is not None:
             #         param.grad.data.clamp_(-1, 1)
-            if lr_dict is not None:
+            if lr_dict is not None and gradients_aggregation == 0:
                 for param_group in optim.param_groups:
                     param_group['lr'] = lr_dict[s/self.T]
                     # param_group['lr'] = 0
